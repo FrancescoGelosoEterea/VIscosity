@@ -976,7 +976,7 @@ fn into_destination(
     if super::xmem::write_physical(pages, offset, &data[..n]) {
         Ok(())
     } else {
-        // Said aloud: The title never reads a request's result
+        // Said aloud: the title never reads a request's result
         // (it only polls for completion), so a destination left unwritten
         // is a model or texture that silently holds whatever its pages
         // held before.
@@ -990,7 +990,8 @@ fn into_destination(
     }
 }
 
-/// Slots by the 2020 order, which the argument shapes at the title's call sites match (0x18, 0x20, 0x30 and 0x40 are called).
+/// Slots by the 2020 order, which the argument shapes at
+/// the title's call sites match (0x18, 0x20, 0x30 and 0x40 are called).
 static QUEUE_VTABLE: Methods<12> = Methods([
     missing::<0> as *const (),
     add_ref_instance::<Queue> as *const (),
