@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-if not defined VICTORY_GAME_DIR set "VICTORY_GAME_DIR=C:\Users\Léo\Downloads\title"
+if not defined VICTORY_GAME_DIR set "VICTORY_GAME_DIR=%USERPROFILE%\Downloads\title"
 set "runner=%~dp0target\release\victory.exe"
 if not exist "%runner%" set "runner=%~dp0victory-3d-rtx-pareto-residency.exe"
 
