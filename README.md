@@ -1,5 +1,65 @@
 # VIctory on NVIDIA
 
+## This copy
+
+This tree is the fork above with one thing added: **host-memory admission**
+(`crates/victory-gpu/src/residency.rs`), taken from
+[codec-d/cool_fox](https://github.com/codec-d/cool_fox)'s "pareto-residency"
+build. Nothing else of that tree was taken, and nothing of this one was
+dropped — the two are the same code apart from this module, and this tree
+already carried all of the NVIDIA work. What it does: reads the machine's free
+commit once a second and refuses to grow the layer's upload storage (and to run
+the texture pass) when the host is short of it, instead of letting the title's
+own allocations fail — which showed up here as a black screen and a
+`host memory pressure` warning. Details: [docs/merge-cool-fox.md](docs/merge-cool-fox.md).
+
+### Measured on this machine
+
+RTX 3080 Ti 12 GB, Ryzen 7 5700X, 32 GiB, Series S profile at half render scale
+(540p, then the title's own upscaler), `scripts/play-nvidia.ps1`'s speed set:
+
+```
+14.0 fps, 71.7 ms/frame
+  44.7 ms preparing (copies 18.8 ms, textures 0.8 ms)
+  18.5 ms copying back
+  3794 draws a frame
+  the card about 66% busy
+```
+
+Ten minutes in the prologue with no device loss and no black screen. On the
+same machine, the other trees tested ran the same scenes at 2-3 fps
+(`codec-d/cool_fox` 394 ms at 1440p, 361 ms at 144p; `Pavl3000/ztrx` 470 ms;
+`victory-fork` ~390 ms). Resolution alone was measured not to be the lever
+there: 1440p to 144p moved 394 ms to 361 ms with the card still 96% busy.
+Numbers and method: [docs/measured-on-this-machine.md](docs/measured-on-this-machine.md).
+
+### Running it here
+
+```powershell
+cargo build --profile diag -p victory --features diagnostics   # the skip list needs diag
+scripts\play-S-540p.ps1 -Exe "D:\path\to\your\title\game_scarlett_master.exe" -NoSmoothMotion
+```
+
+Launchers used on this machine (outside the repository, so they survive a
+`git clean`): `Jogar.cmd` (the speed set, 14 fps, restarts
+the title up to three times if the device is removed and logs each attempt to
+`logs\launch-N.log`), `Jogar-estavel.cmd` (`VICTORY_RELAY=1`,
+`VICTORY_CARD_STEPS=0`, `VICTORY_TEXTURE_NO_WAIT=0` — the fork's `-Quality`
+set, for when the speed set's early hand-back of skinned meshes shows), and
+`Jogar-debug.cmd` (`VICTORY_D3D12_DEBUG=1` + `DRED=1`, writes
+`logs\ultimo.log`).
+
+Controls: with no pad connected the keyboard is a pad while the title's window
+has focus — Enter = A, Backspace = B, X/Y, arrows = D-pad, W A S D = left
+stick, I J K L = right stick, Q/E = shoulders, Z/C = triggers, F/H = stick
+clicks, Esc = Menu, Tab = View.
+
+Two things worth knowing: the first time a place is seen is slow while its
+shaders and pipelines are made (do not delete `%LOCALAPPDATA%\victory` — the
+cache is what keeps those hitches from coming back), and a `device removed`
+(`0x887A0005`) leaves breadcrumbs in the DRED log only when the debug launcher
+was used.
+
 ## Built from many projects
 
 This repository did not come from one place. Over several weeks we built, ran
@@ -13,6 +73,9 @@ Code that is in this repository:
 - [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX):
   Its threading, write relay, card fills, copy queue and texture
   read-back are all kept.
+- [codec-d/cool_fox](https://github.com/codec-d/cool_fox): its host-memory
+  admission (`crates/victory-gpu/src/residency.rs`), the one thing this tree
+  takes from it — see "This copy" above.
 - [Marvisak/VIctory](https://github.com/Marvisak/VIctory): the original
   compatibility layer under everything else (loader, runtime services,
   Direct3D 12 back end, shader recompiler).
