@@ -122,10 +122,10 @@ pub use lower::{host_settings, set_host_max_wave, set_host_rdna};
 pub use rect::rect_list_gs;
 pub use shader::{
     MEMORY_FAULTS, MEMORY_PAGES, MEMORY_READ_ONLY, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS,
-    SLOT_MEMORY, SLOT_STRIDES, SLOT_STRIDES_COUNT, SLOT_TABLE_STRIDES, SLOT_VIEW_ADDRESSES,
-    USER_DATA_SPACE, VIEW_INTEGER, VIEW_SIGNED, VIEW_STRIDE_BITS, USER_DISPATCH_THREADS_X,
-    USER_MEMORY_BASE, USER_ROOT_ADDRESS, USER_VIEW_ADDRESS, USER_VIEW_BIAS, constants_raw, raw_views,
-    set_raw_views, set_view_heap_limit, view_heap_limit,
+    SLOT_MEET, SLOT_MEMORY, SLOT_STRIDES, SLOT_STRIDES_COUNT, SLOT_TABLE_STRIDES,
+    SLOT_VIEW_ADDRESSES, USER_DATA_SPACE, VIEW_INTEGER, VIEW_SIGNED, VIEW_STRIDE_BITS,
+    USER_DISPATCH_THREADS_X, USER_MEMORY_BASE, USER_ROOT_ADDRESS, USER_VIEW_ADDRESS,
+    USER_VIEW_BIAS, constants_raw, raw_views, set_raw_views, set_view_heap_limit, view_heap_limit,
 };
 
 /// Whether programs that reach memory by address (ray tracing and what
@@ -447,6 +447,7 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
     emit(&c, &native, &p, &st, &io, &res)
 }
 
+<<<<<<< HEAD
 thread_local! {
     /// The hash-scoped wave policy for this thread's current translation.
     static WIDE_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -478,6 +479,16 @@ pub fn with_wave_wide<T>(on: bool, translate: impl FnOnce() -> T) -> T {
     }
     let _restore = Restore(WIDE_HERE.replace(on));
     translate()
+}
+
+/// Meet sites the face-relocation compute emitted, or 0 before it is translated.
+pub fn defrag_meet_sites() -> u32 {
+    lower::meet_sites()
+}
+
+/// Shader LDS reads and writes that received their own half-meet.
+pub fn defrag_lds_sites() -> (u32, u32) {
+    lower::meet_lds_sites()
 }
 
 /// Emits a program whose earlier stages already ran.
@@ -636,11 +647,15 @@ pub fn emit(
         // divergent LDS is read and written in one region, so it only lowers
         // once that region is taken by both halves of a wave. The other wave
         // of the group does not wait (`with_half_meets`). Not the global switch.
-        let defrag = c.digest
-            == [
-                0x50, 0xcf, 0x28, 0x32, 0x8b, 0x58, 0x05, 0x3d, 0xa8, 0x9a, 0x8d, 0xa0, 0x1a, 0xa1,
-                0x23, 0xc6,
-            ];
+        // `VICTORY_DEFRAG=0` leaves this compute untranslated, so its dispatches
+        // are dropped and a run can be compared with one where it executes.
+        let defrag_off = std::env::var_os("VICTORY_DEFRAG").is_some_and(|v| v == "0");
+        let defrag = !defrag_off
+            && c.digest
+                == [
+                    0x50, 0xcf, 0x28, 0x32, 0x8b, 0x58, 0x05, 0x3d, 0xa8, 0x9a, 0x8d, 0xa0, 0x1a,
+                    0xa1, 0x23, 0xc6,
+                ];
         // A single guest wave can iterate an active-lane loop until both host
         // halves have finished. The precise latch and convergence conditions
         // for the driver compute route are checked by widen().
