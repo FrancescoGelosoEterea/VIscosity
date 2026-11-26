@@ -447,6 +447,39 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
     emit(&c, &native, &p, &st, &io, &res)
 }
 
+thread_local! {
+    /// The hash-scoped wave policy for this thread's current translation.
+    static WIDE_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Uses the wave-wide form only for the named container hashes.
+pub fn wave_wide_only(hash: &str) -> bool {
+    static ONLY: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ONLY.get_or_init(|| {
+        std::env::var("VICTORY_WAVE_WIDE_ONLY")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_owned)
+            .collect()
+    })
+    .iter()
+    .any(|candidate| candidate.eq_ignore_ascii_case(hash))
+}
+
+/// Runs one translation with its own wave-wide policy on this thread.
+pub fn with_wave_wide<T>(on: bool, translate: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WIDE_HERE.set(self.0);
+        }
+    }
+    let _restore = Restore(WIDE_HERE.replace(on));
+    translate()
+}
+
 /// Emits a program whose earlier stages already ran.
 pub fn emit(
     c: &Container,
@@ -570,6 +603,23 @@ pub fn emit(
                 }
             }
         }
+        // Off unless asked for (`VICTORY_WAVE_WIDE=1`), for a console wave run as two host
+        // waves: this form puts group barriers inside branches and loops, and runs 121-124
+        // lost the card in a submission of two programs that had just moved to it
+        // (`ptfx_CS_lightAtlas_Sprite` and `_Trail`). The 32-lane programs' form below, which
+        // has no barrier, stays on.
+        let wide_option = std::env::var_os("VICTORY_WAVE_WIDE");
+        // Both archived kernels use one logical wave per group and have
+        // validated wave32 PSOs on RTX. Explicit policy wins.
+        let scene_kernel = matches!(native.io, crate::native::StageIo::Cs(cs) if cs.threads.iter().product::<u32>() == 64)
+            && matches!(
+                c.digest,
+                [0x58, 0x1d, 0xab, 0x2c, 0xd8, 0xbc, 0xf2, 0x2e, 0x5c, 0x96, 0x4b, 0x98, 0xe9, 0x03, 0x48, 0xd1]
+                    | [0x24, 0x31, 0xbb, 0xe7, 0xdc, 0x15, 0x4a, 0xd7, 0x59, 0xd2, 0x0b, 0xc9, 0x54, 0x82, 0x9c, 0x1c]
+            );
+        let wide_on = wide_option
+            .as_ref()
+            .map_or_else(|| scene_kernel || WIDE_HERE.get(), |v| v == "1");
         // A single guest wave can iterate an active-lane loop until both host
         // halves have finished. The precise latch and convergence conditions
         // for the driver compute route are checked by widen().
