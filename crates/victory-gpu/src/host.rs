@@ -8586,6 +8586,9 @@ impl Meter {
         if elapsed < std::time::Duration::from_secs(1) {
             return;
         }
+        // Once a second: how much of the machine's commit is left, which the
+        // texture prefetch's admission uses (ported from codec-d/cool_fox).
+        crate::residency::refresh();
         let drawn = crate::draw::drawn();
         let frames = f64::from(self.frames);
         let fps = frames / elapsed.as_secs_f64();

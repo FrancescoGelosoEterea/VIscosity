@@ -2135,6 +2135,13 @@ impl State {
         if !*ON.get_or_init(|| std::env::var_os("VICTORY_HEAP_TEXTURES").is_none_or(|v| v != "0")) {
             return;
         }
+        // A machine short of commit (this one: 32 GiB) does better with fewer
+        // uploads than with the title's own allocations failing: the pass is
+        // skipped while there is no room for it, and its slots wait
+        // (ported from codec-d/cool_fox, `residency`).
+        if !crate::residency::admit_texture_pass(false) {
+            return;
+        }
         let memory = crate::host::host().and_then(|h| h.video_memory());
         // `VICTORY_TEXTURE_STAGE_MB` sets it: a backlog of tens of thousands of
         // textures (a scene's first minutes) then drains in fewer frames.

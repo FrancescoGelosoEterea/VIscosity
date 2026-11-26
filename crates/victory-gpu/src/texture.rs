@@ -1857,6 +1857,13 @@ fn staging(resource: This, copy: &crate::resource::HostTexture, first: u32) -> O
     let (piece, buffer, base, data) = match crate::pool::staging(host, total) {
         Some((piece, buffer, base, data)) => (Some(piece), buffer, base, data),
         None => {
+            // Growing a new upload buffer is what takes the host's commit down
+            // when the machine is short of it; the texture is looked at again
+            // later instead (ported from codec-d/cool_fox, `residency`).
+            if !crate::residency::allow_staging_growth(false) {
+                crate::residency::note_staging_deferred();
+                return None;
+            }
             let (buffer, data) = host.upload_buffer(total)?;
             crate::host::name(&buffer, || {
                 format!(
