@@ -436,9 +436,21 @@ commits taken from elsewhere name the commit and its author.
   every view of a page (with Spexivus, joroyt and tightfall), and Joshua Odom's
   reads into title memory.
 - **Geckomacabre** and **cxy0072019-sketch**: the texture read-back.
+- **[codec-d/cool_fox](https://github.com/codec-d/cool_fox)** (the
+  "pareto-residency" build): its host-memory admission, ported here as
+  `crates/victory-gpu/src/residency.rs` with four call sites — see "This copy"
+  above and [docs/merge-cool-fox.md](docs/merge-cool-fox.md). Nothing else of
+  that tree is here.
 - **[XCL](https://github.com/xcl-dev/xcl)** (GPL-2.0-only) was read for how the same
   title behaves under another layer; no code of it is here.
 - This fork's changes were made with [Claude Code](https://claude.com/claude-code).
+- **This copy** (the `CGBJ-trustno1` fork) is the tree above with the
+  `residency` port and the measurements of
+  [docs/measured-on-this-machine.md](docs/measured-on-this-machine.md): the
+  runs on an RTX 3080 Ti / Ryzen 7 5700X / 32 GiB that produced the fps table,
+  the three launchers, and the note on the `device removed` seen once at
+  start-up. The code above is theirs; the port and the numbers are this
+  copy's.
 
 ## License
 
