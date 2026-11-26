@@ -26,12 +26,25 @@ RTX 3080 Ti 12 GB, Ryzen 7 5700X, 32 GiB, Series S profile at half render scale
   the card about 66% busy
 ```
 
-Ten minutes in the prologue with no device loss and no black screen. On the
-same machine, the other trees tested ran the same scenes at 2-3 fps
-(`codec-d/cool_fox` 394 ms at 1440p, 361 ms at 144p; `Pavl3000/ztrx` 470 ms;
-`victory-fork` ~390 ms). Resolution alone was measured not to be the lever
-there: 1440p to 144p moved 394 ms to 361 ms with the card still 96% busy.
-Numbers and method: [docs/measured-on-this-machine.md](docs/measured-on-this-machine.md).
+Ten minutes in the prologue with no device loss and no black screen.
+
+The other trees tested on this machine, same prologue:
+
+| Tree | Profile, resolution | Frame | fps |
+|---|---|---|---|
+| **this one + `residency`** | Series S, 540p (half scale, own upscaler) | **71.7 ms** | **14.0** |
+| codec-d/cool_fox | Series S, native (1440p) | 394 ms | 2.5 |
+| codec-d/cool_fox | Series S, 144p | 361 ms | 2.8 |
+| Pavl3000/ztrx | Series S, native | 470 ms | 2.1 |
+| victory-fork | Series X, native | ~390 ms | 2.6 |
+
+Resolution alone was measured not to be the lever there: 1440p to 144p (100x
+fewer pixels) moved 394 ms to 361 ms, with the card still 96% busy. What moved
+it 5x is this fork's set — the title patched to half scale with its own
+upscaler, `VICTORY_BVH_MISS`, 1,034 ray-tracing shaders skipped,
+`VICTORY_DYNAMIC_SLOTS` past NVIDIA's 1,000,000-view cap, the Series S compose
+plane — plus the `residency` admission. Numbers and method:
+[docs/measured-on-this-machine.md](docs/measured-on-this-machine.md).
 
 ### Running it here
 
