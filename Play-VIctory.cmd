@@ -31,7 +31,7 @@ if not defined VICTORY_CARD_AWAKE set "VICTORY_CARD_AWAKE=1"
 if not defined VICTORY_SHOW_AFTER set "VICTORY_SHOW_AFTER=1"
 rem A constant, not the frame estimate: walking into a bright doorway raised
 rem the estimate and washed the whole frame out. constant:1.0 is even light.
-if not defined VICTORY_AMBIENT set "VICTORY_AMBIENT=constant:1.0"
+if not defined VICTORY_AMBIENT set "VICTORY_AMBIENT=constant:0.8"
 rem The write guard misses some titles' writes: skin on a guard's arms and the
 rem phone's frame read garbage (colour noise) until every check hashed the
 rem texture again. Costs some CPU; the frame rate held at 5-7 fps here.
