@@ -106,11 +106,6 @@ struct Last {
     asked: u64,
     /// The frame a partly mapped texture was last read in.
     partial: Option<u64>,
-    /// The last read of a partly mapped texture found nothing but zeros: it
-    /// is the one a streaming arrival changes next, so it is looked at again
-    /// in a frame or two rather than after thirty (character skins stayed
-    /// black for seconds on an 8 GB card).
-    zero: bool,
     /// Until this frame a guarded texture is hashed at every check: its
     /// first checks, and after the hash found a change the guard had not
     /// seen ([`hot_textures`]). 0: not checked under the guard yet.
@@ -1359,8 +1354,7 @@ impl Staging {
             // unmapped pages is slow, and nothing tells us when pages
             // arrive): a mip that streams in shows up to 30 frames late.
             let frame = crate::frame::current();
-            let every = if last.zero { 2 } else { 30 };
-            if !exact && last.partial.is_some_and(|at| frame < at + every) {
+            if !exact && last.partial.is_some_and(|at| frame < at + 30) {
                 return 0;
             }
             last.partial = Some(frame);
@@ -1374,10 +1368,8 @@ impl Staging {
                 }
                 last.hash = Some(hash);
                 if read.iter().all(|&b| b == 0) {
-                    last.zero = true;
                     return false;
                 }
-                last.zero = false;
                 self.detile(read);
                 true
             });
