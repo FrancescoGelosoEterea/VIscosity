@@ -531,13 +531,17 @@ fn a_wave_or_inside(skip: u32, name: &str) {
     assert_eq!(lower::branches_around(&st, &needs), Some(vec![branch]));
     // (taken, past the body, when every lane's bit is clear)
     assert_eq!(st.wave_any[branch], Some(false));
-    // wave-wide, every lane runs the reduction (EXEC stays a guard on what it does there)
-    let wide = HashSet::from([branch]);
-    let st = structure::structure_wide(&p, &wide).expect("structure");
     let inside = match p.blocks[branch].exit {
         ir::Exit::Branch { not_taken, .. } => not_taken,
         _ => unreachable!(),
     };
+    let all = lower::all_lane_blocks(&st).expect("lane regions");
+    assert!(!all[inside], "the per-lane branch body is divergent");
+    // wave-wide, every lane runs the reduction (EXEC stays a guard on what it does there)
+    let wide = HashSet::from([branch]);
+    let st = structure::structure_wide(&p, &wide).expect("structure");
+    let all = lower::all_lane_blocks(&st).expect("lane regions");
+    assert!(all[inside], "a wave-wide branch makes the barrier block uniform");
     assert!(st.guards[inside].iter().any(Option::is_some));
     let shader = lowered(&native, &p, &wide).expect("lower");
     if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
