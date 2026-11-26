@@ -4255,6 +4255,19 @@ impl Host {
         })
     }
 
+    /// Whether the host is running on a software adapter (WARP).
+    pub(crate) fn is_software(&self) -> bool {
+        static SOFTWARE: OnceLock<bool> = OnceLock::new();
+        *SOFTWARE.get_or_init(|| {
+            if let Some(adapter) = &self.adapter
+                && let Ok(desc) = unsafe { adapter.GetDesc() }
+            {
+                return desc.VendorId == 0x1414;
+            }
+            false
+        })
+    }
+
     /// Whether the host GPU supports the depth bounds test; logged once.
     pub(crate) fn depth_bounds(&self) -> bool {
         static BOUNDS: OnceLock<bool> = OnceLock::new();
@@ -4270,7 +4283,7 @@ impl Host {
                     )
                     .is_ok()
             };
-            let supported = ok && options.DepthBoundsTestSupported.as_bool();
+            let supported = ok && options.DepthBoundsTestSupported.as_bool() && !self.is_software();
             tracing::info!(supported, "host depth bounds support");
             supported
         })
