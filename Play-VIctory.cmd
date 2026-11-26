@@ -30,8 +30,12 @@ if not defined VICTORY_MAP_THREADS set "VICTORY_MAP_THREADS=1"
 if not defined VICTORY_CARD_AWAKE set "VICTORY_CARD_AWAKE=1"
 if not defined VICTORY_SHOW_AFTER set "VICTORY_SHOW_AFTER=1"
 rem A constant, not the frame estimate: walking into a bright doorway raised
-rem the estimate and washed the whole frame out. constant:0.8 is even light.
-if not defined VICTORY_AMBIENT set "VICTORY_AMBIENT=constant:0.8"
+rem the estimate and washed the whole frame out. constant:1.0 is even light.
+if not defined VICTORY_AMBIENT set "VICTORY_AMBIENT=constant:1.0"
+rem The write guard misses some titles' writes: skin on a guard's arms and the
+rem phone's frame read garbage (colour noise) until every check hashed the
+rem texture again. Costs some CPU; the frame rate held at 5-7 fps here.
+if not defined VICTORY_TEXTURE_GUARD set "VICTORY_TEXTURE_GUARD=0"
 rem The asynchronous submission paths stay off on NVIDIA: with THIN the head
 rem skin of people in play is not drawn (eyes and teeth are), and JOIN_PARTS
 rem repeats frames of the opening video. Set them to 1 to try instead.
