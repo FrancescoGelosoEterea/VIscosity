@@ -621,7 +621,6 @@ mod tests {
     use super::*;
 
     #[test]
-<<<<<<< HEAD
     fn initialization_producers_are_started_early_without_classifying_recurring_skinning() {
         let pending = |stage: &'static str, text: &[u8]| {
             // Real containers identify their stage. Keep the synthetic
