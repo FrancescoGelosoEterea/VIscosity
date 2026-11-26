@@ -447,7 +447,6 @@ fn translate_plain(container: &[u8]) -> Result<HostShader, ShaderError> {
     emit(&c, &native, &p, &st, &io, &res)
 }
 
-<<<<<<< HEAD
 thread_local! {
     /// The hash-scoped wave policy for this thread's current translation.
     static WIDE_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
