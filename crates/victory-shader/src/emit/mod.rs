@@ -1742,10 +1742,11 @@ mod tests {
         let plain = [&section[..4], &section[28..35], &end].concat();
         let features = lower(plain).unwrap();
         assert_eq!(features & 0x1000, 0, "SFI0 {features:#x}: ROVs");
-        // Without the section's start the wait stays unknown.
+        // Without the section's start: the wait loop is still left out (`ir::without_pops_wait`
+        // drops every POPS wait whose values nothing reads after it), so the program translates.
         let mut unmarked = [&section[..], &end].concat();
         unmarked.remove(16);
-        assert!(lower(unmarked).is_err());
+        assert!(lower(unmarked).is_ok());
     }
 
     #[test]
