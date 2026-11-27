@@ -880,6 +880,17 @@ fn emit_forms(
                         forms[0].1.as_ref().map(|f| &f.0),
                         Some(p),
                     ];
+                    // The face relocation compute took the paired form before the half meets
+                    // came (0 refused, faces right); with the paired form's lowering in this
+                    // tree the half-meet form panics on it ("use of a void value"), so the
+                    // paired form goes first and the half meets stay for when it refuses.
+                    if defrag && pairs_on() {
+                        let again = paired(c, native, p, io, res);
+                        report("paired lanes, before the half meets", &again);
+                        if again.is_ok() {
+                            return again;
+                        }
+                    }
                     if let Some(base) = bases.into_iter().flatten().next() {
                         let again = if defrag {
                             lower::with_half_meets(|| widen(c, native, base, why, driver_loop))
