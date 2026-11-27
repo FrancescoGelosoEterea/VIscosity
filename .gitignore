@@ -79,3 +79,6 @@ validate_*.txt
 *.swp
 Thumbs.db
 .DS_Store
+
+# launcher logs and screenshots (scripts/play-cool.ps1, scripts/shot.ps1)
+/runs/

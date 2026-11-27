@@ -1,4 +1,4 @@
-# Screenshot of the VIctory game window to E:\work\runs\shots\<name>.png (window content via PrintWindow,
+# Screenshot of the game window to runs\shots\<name>.png in the repository (window content via PrintWindow,
 # falling back to a screen copy after bringing it to the front). Prints the file and the window title.
 param([string]$Name = ("shot-" + (Get-Date -Format 'MMdd-HHmmss')), [switch]$Front)
 Add-Type -AssemblyName System.Drawing
@@ -16,7 +16,7 @@ public static class W {
 $p = Get-Process victory -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $p) { Write-Host 'No game window.'; exit 1 }
 $h = $p.MainWindowHandle
-$dir = 'E:\work\runs\shots'; New-Item -ItemType Directory -Force $dir | Out-Null
+$dir = Join-Path (Split-Path $PSScriptRoot -Parent) 'runs\shots'; New-Item -ItemType Directory -Force $dir | Out-Null
 $file = Join-Path $dir "$Name.png"
 $r = New-Object W+R; [void][W]::GetWindowRect($h, [ref]$r)
 $w = $r.Ri - $r.L; $hh = $r.B - $r.T
