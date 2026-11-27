@@ -1,5 +1,6 @@
-//! Gamepads that XInput does not list, read over HID: the two vendor-0x054C pad
-//! generations, Gen4 and Gen5 (USB and Bluetooth, with rumble), and any other HID gamepad
+//! Gamepads that XInput does not list, read over HID: the two
+//! vendor-0x054C pad generations, Gen4 and Gen5 (USB and Bluetooth, with
+//! rumble), and any other HID gamepad
 //! or joystick by its usages. XInput devices (paths with `IG_`) are left to
 //! XInput.
 //!
