@@ -23,8 +23,8 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 const SLOTS: u32 = 16;
 
 const SOURCE: &str = r#"
-#define RS "RootConstants(num32BitConstants=3, b0), DescriptorTable(SRV(t0, numDescriptors=2), UAV(u0)), StaticSampler(s0, filter=FILTER_MIN_MAG_MIP_LINEAR, addressU=TEXTURE_ADDRESS_CLAMP, addressV=TEXTURE_ADDRESS_CLAMP)"
-cbuffer Size : register(b0) { uint w; uint h; uint premultiplied; };
+#define RS "RootConstants(num32BitConstants=5, b0), DescriptorTable(SRV(t0, numDescriptors=2), UAV(u0)), StaticSampler(s0, filter=FILTER_MIN_MAG_MIP_LINEAR, addressU=TEXTURE_ADDRESS_CLAMP, addressV=TEXTURE_ADDRESS_CLAMP)"
+cbuffer Size : register(b0) { uint w; uint h; uint premultiplied; float sharpen; uint smooth; };
 Texture2D<float4> game : register(t0);
 Texture2D<float4> ui : register(t1);
 RWTexture2D<float4> outp : register(u0);
@@ -35,6 +35,49 @@ void main(uint3 id : SV_DispatchThreadID) {
     if (id.x >= w || id.y >= h) return;
     float2 uv = (float2(id.xy) + 0.5) / float2(w, h);
     float4 g = game.Load(int3(id.xy, 0));
+    if (smooth != 0) {
+        // Stair-stepped edges smoothed along their direction (after
+        // Timothy Lottes' FXAA, its short form): where the four corners
+        // around a pixel differ in brightness, the picture is averaged
+        // along the edge they show, and left alone where they do not.
+        float2 px = 1.0 / float2(w, h);
+        float3 lum = float3(0.299, 0.587, 0.114);
+        float nw = dot(game.SampleLevel(linear_clamp, uv + float2(-1.0, -1.0) * px, 0).rgb, lum);
+        float ne = dot(game.SampleLevel(linear_clamp, uv + float2(1.0, -1.0) * px, 0).rgb, lum);
+        float sw = dot(game.SampleLevel(linear_clamp, uv + float2(-1.0, 1.0) * px, 0).rgb, lum);
+        float se = dot(game.SampleLevel(linear_clamp, uv + float2(1.0, 1.0) * px, 0).rgb, lum);
+        float m = dot(g.rgb, lum);
+        float low = min(m, min(min(nw, ne), min(sw, se)));
+        float high = max(m, max(max(nw, ne), max(sw, se)));
+        if (high - low > max(0.0312, high * 0.125)) {
+            float2 dir = float2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+            float reduce = max((nw + ne + sw + se) * 0.03125, 0.0078125);
+            dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -8.0, 8.0) * px;
+            float3 a = 0.5 * (game.SampleLevel(linear_clamp, uv + dir * (1.0 / 3.0 - 0.5), 0).rgb
+                + game.SampleLevel(linear_clamp, uv + dir * (2.0 / 3.0 - 0.5), 0).rgb);
+            float3 b = a * 0.5 + 0.25 * (game.SampleLevel(linear_clamp, uv - dir * 0.5, 0).rgb
+                + game.SampleLevel(linear_clamp, uv + dir * 0.5, 0).rgb);
+            float lb = dot(b, lum);
+            g.rgb = (lb < low || lb > high) ? a : b;
+        }
+    } else if (sharpen > 0.0) {
+        // Contrast-adaptive sharpening over the pixel's four neighbours
+        // (after AMD's FidelityFX CAS): edges of little contrast are
+        // sharpened most, strong ones least, so nothing rings. Only the
+        // game's picture: the interface is laid over it afterwards.
+        int2 p = int2(id.xy);
+        int2 last = int2(w, h) - 1;
+        float3 a = game.Load(int3(clamp(p + int2(0, -1), 0, last), 0)).rgb;
+        float3 b = game.Load(int3(clamp(p + int2(-1, 0), 0, last), 0)).rgb;
+        float3 d = game.Load(int3(clamp(p + int2(1, 0), 0, last), 0)).rgb;
+        float3 e = game.Load(int3(clamp(p + int2(0, 1), 0, last), 0)).rgb;
+        float3 c = g.rgb;
+        float3 least = min(c, min(min(a, b), min(d, e)));
+        float3 most = max(c, max(max(a, b), max(d, e)));
+        float3 amount = sqrt(saturate(min(least, 1.0 - most) / max(most, 1e-4)));
+        float3 weight = amount * (-1.0 / lerp(8.0, 5.0, saturate(sharpen)));
+        g.rgb = saturate(((a + b + d + e) * weight + c) / (1.0 + 4.0 * weight));
+    }
     float4 u = ui.SampleLevel(linear_clamp, uv, 0);
     float3 c = premultiplied != 0 ? g.rgb * (1.0 - u.a) + u.rgb : lerp(g.rgb, u.rgb, u.a);
     outp[id.xy] = float4(c, 1.0);
@@ -115,6 +158,37 @@ fn make(device: &ID3D12Device) -> windows::core::Result<Pass> {
 /// (8-bit RGBA, typeless or not).
 fn rgba8(format: DXGI_FORMAT) -> bool {
     matches!(format.0, 27 | 28)
+}
+
+/// How much the game's picture is sharpened before the interface is laid
+/// over it: `VICTORY_SHARPEN=<0 to 1>` (unset or 0: not at all). The world is
+/// drawn below the output's size and scaled up by the title, which leaves it
+/// soft; this gives edges some of their contrast back. It cannot bring back
+/// detail that was never drawn.
+fn sharpen() -> f32 {
+    static AMOUNT: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *AMOUNT.get_or_init(|| {
+        let amount = std::env::var("VICTORY_SHARPEN").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|a| a.is_finite()).unwrap_or(0.0).clamp(0.0, 1.0);
+        if amount > 0.0 {
+            tracing::info!(amount, "the game's picture is sharpened before it is shown (VICTORY_SHARPEN)");
+        }
+        amount
+    })
+}
+
+/// Whether stair-stepped edges of the game's picture are smoothed before it
+/// is shown (`VICTORY_SMOOTH=1`; off unless said; sharpening is then left
+/// out). The world is drawn below the output's size, and what the title's
+/// own upscaler makes of it here has steps about two of its pixels wide.
+fn smooth() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = crate::switch::on("VICTORY_SMOOTH");
+        if on {
+            tracing::info!("edges of the game's picture are smoothed before it is shown (VICTORY_SMOOTH=1)");
+        }
+        on
+    })
 }
 
 fn premultiplied() -> bool {
@@ -223,7 +297,7 @@ pub(crate) fn record(
         before.push(t(ui, ui_state, read));
         after.push(t(ui, read, ui_state));
     }
-    let constants: [u32; 3] = [w as u32, h, u32::from(premultiplied())];
+    let constants: [u32; 5] = [w as u32, h, u32::from(premultiplied()), sharpen().to_bits(), u32::from(smooth())];
     // SAFETY: an open list (the present's); slots of our heap; live
     // resources and objects (the pass's own live as long as the process,
     // the texture is kept by the present's list).
@@ -235,7 +309,7 @@ pub(crate) fn record(
         list.SetDescriptorHeaps(&[Some(pass.views.clone())]);
         list.SetComputeRootSignature(&pass.root);
         list.SetPipelineState(&pass.pso);
-        list.SetComputeRoot32BitConstants(0, 3, constants.as_ptr().cast(), 0);
+        list.SetComputeRoot32BitConstants(0, 5, constants.as_ptr().cast(), 0);
         list.SetComputeRootDescriptorTable(1, gpu);
         list.Dispatch((w as u32).div_ceil(8), h.div_ceil(8), 1);
         list.ResourceBarrier(&after);

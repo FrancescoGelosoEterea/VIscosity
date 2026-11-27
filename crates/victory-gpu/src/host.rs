@@ -8592,6 +8592,7 @@ impl Meter {
         let drawn = crate::draw::drawn();
         let frames = f64::from(self.frames);
         let fps = frames / elapsed.as_secs_f64();
+        crate::fpsbox::set(fps);
         let ms = elapsed.as_secs_f64() * 1000.0 / frames;
         let draws = (drawn - self.drawn) as f64 / frames;
         (self.since, self.frames, self.drawn) = (std::time::Instant::now(), 0, drawn);
@@ -8617,6 +8618,8 @@ impl Meter {
         );
         crate::shadow::exact_line(frames);
         crate::descriptor::sync_line(frames);
+        crate::descriptor::host::dynamic_line(frames);
+        crate::draw::recheck_line(frames);
         late_line(frames);
         crate::queue::behind_line(frames);
         card_clock_line(frames, ms);
@@ -8820,16 +8823,16 @@ impl Meter {
             }
         }
         if self.caption.is_none() {
-            // The window's own text, read without a message.
-            let mut buffer = vec![0u16; 512];
-            // SAFETY: a window handle and a buffer of that length.
-            let n = unsafe { InternalGetWindowText(hwnd, &mut buffer) };
-            buffer.truncate(n.max(0) as usize);
-            self.caption = Some(buffer);
+            // The window's name: ours ([`WINDOW_NAME`]), not the text the
+            // title gave its window (the window shown is the title's own
+            // when it makes one).
+            self.caption = Some(WINDOW_NAME.encode_utf16().collect());
         }
         let Some(caption) = &self.caption else { return };
-        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
-        let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
+        // Just the name: the frame rate is in the corner of the picture
+        // (`crate::fpsbox`) and in the log.
+        let _ = (fps, ms, draws);
+        let mut text: Vec<u16> = caption.clone();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
         // which may not pump for a while), so a thread of ours does it and
@@ -8974,6 +8977,13 @@ impl Host {
             let watched = crate::popwatch::take(&self.device, list, texture);
             #[cfg(feature = "diagnostics")]
             p.panel.draw(self, copy, &back, (width, height), format);
+            // The frame rate, into the corner of what is shown (not of the
+            // title's own frame; the frame recorder leaves it out).
+            {
+                #[cfg(feature = "diagnostics")]
+                let _ours = crate::replay::record::unrecorded();
+                crate::fpsbox::draw(self, &copy.list, &back, (width, height, format));
+            }
             #[cfg(not(feature = "diagnostics"))]
             let _ = frame;
             list.ResourceBarrier(&[
@@ -9032,6 +9042,7 @@ impl Host {
             Some(hwnd) => hwnd,
             None => window(width, height)?,
         };
+        fill_monitor(hwnd);
         self.log_video_memory("right before the swap chain is made");
         // SAFETY: plain object creation for our window.
         unsafe {
@@ -9070,6 +9081,55 @@ impl Host {
             })
         }
     }
+}
+
+/// Where the window shown is put, if asked:
+///
+/// - `VICTORY_FULLSCREEN=1`: it loses its frame and covers the whole monitor it
+///   is on, at that monitor's own resolution. A borderless window over the
+///   desktop, not an exclusive mode: the driver's frame generation (NVIDIA
+///   Smooth Motion) then presents at the display's resolution.
+/// - `VICTORY_WINDOW_SIZE=<width>x<height>`: it keeps its frame and gets that
+///   size, frame included, at the top left of its monitor's work area.
+///
+/// The swap chain keeps the title's size either way and is stretched to the
+/// window. The window belongs to a thread of the title, which may not look
+/// at its messages for a while, so the change is asked for without waiting
+/// (`SWP_ASYNCWINDOWPOS`) and from a thread of ours.
+fn fill_monitor(hwnd: HWND) {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+    let full = crate::switch::on("VICTORY_FULLSCREEN");
+    let size = std::env::var("VICTORY_WINDOW_SIZE").ok().and_then(|v| {
+        let (w, h) = v.trim().split_once(['x', 'X'])?;
+        Some((w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?))
+    });
+    let size = size.filter(|&(w, h)| (320..=16384).contains(&w) && (200..=16384).contains(&h));
+    if !full && size.is_none() {
+        return;
+    }
+    let window = hwnd.0 as usize;
+    let _ = std::thread::Builder::new().name("victory-window".into()).spawn(move || {
+        let hwnd = HWND(window as *mut _);
+        // SAFETY: a window of this process; plain queries and style changes.
+        unsafe {
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return;
+            }
+            let flags = SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW;
+            if full {
+                let r = info.rcMonitor;
+                SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as isize);
+                let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
+                tracing::info!(width = r.right - r.left, height = r.bottom - r.top, "the window covers its monitor (VICTORY_FULLSCREEN=1)");
+            } else if let Some((width, height)) = size {
+                let r = info.rcWork;
+                let _ = SetWindowPos(hwnd, None, r.left, r.top, width, height, flags);
+                tracing::info!(width, height, "the window was given its size (VICTORY_WINDOW_SIZE)");
+            }
+        }
+    });
 }
 
 /// A visible top-level window of this process: the one the title made, if
@@ -9547,6 +9607,9 @@ extern "system" fn window_proc(
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
+/// What the window is called: its whole caption.
+const WINDOW_NAME: &str = "miamiwalk 6";
+
 fn make_window(width: u32, height: u32) -> windows::core::Result<HWND> {
     const CLASS: PCWSTR = w!("VIctory");
     // SAFETY: registers our class once and creates a window of it.
@@ -9571,7 +9634,7 @@ fn make_window(width: u32, height: u32) -> windows::core::Result<HWND> {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             CLASS,
-            w!("VIctory"),
+            w!("miamiwalk 6"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

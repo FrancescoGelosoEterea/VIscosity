@@ -623,6 +623,233 @@ pub(crate) static HEAP_TEXTURES_FULL: AtomicU64 = AtomicU64::new(0);
 /// memory is looked at again, each counted from the look before.
 const RECHECK_FRAMES: [u64; 5] = [4, 12, 40, 120, 400];
 
+/// [`RECHECK_FRAMES`], or what `VICTORY_RECHECK_FRAMES=<frames>,<frames>,...`
+/// gives in its place (1 to 16 waits, each of 1 to 100,000 frames).
+///
+/// The waits are frames, and a frame is 75 ms in a heavy street: a texture
+/// the title went on filling after its upload showed the black of its missing
+/// blocks for 0.6 s (found by the look after 12 frames: 81 of 200 changes in
+/// run nv17), 3 s (after 40: 23), 9 s (after 120: 13) and 30 s (after 400: 4).
+fn recheck_frames() -> &'static [u64] {
+    static FRAMES: std::sync::OnceLock<Vec<u64>> = std::sync::OnceLock::new();
+    FRAMES.get_or_init(|| {
+        let asked: Option<Vec<u64>> = std::env::var("VICTORY_RECHECK_FRAMES")
+            .ok()
+            .and_then(|v| v.split(',').map(|n| n.trim().parse().ok().filter(|n| (1..=100_000).contains(n))).collect());
+        match asked {
+            Some(frames) if (1..=16).contains(&frames.len()) => frames,
+            _ => RECHECK_FRAMES.to_vec(),
+        }
+    })
+}
+
+/// Frames a texture found changed twice with nothing to tell of it is looked
+/// at in every frame for, counted from its last change.
+const VOLATILE_FRAMES: u64 = 2000;
+/// How many such textures are kept at most (a look reads 48 KiB).
+const VOLATILE_MOST: usize = 512;
+
+/// Textures (by the address of their memory) found changed after their
+/// upload with nothing to tell of it: how often, and the frame of the last
+/// time. (`VICTORY_RECHECK_VOLATILE=0`: not kept, as before.)
+///
+/// The title fills these through another view of their pages, which neither
+/// a descriptor write nor the runtime tells of, and it is the same few again
+/// and again: 200 such changes in the first minutes of run nv17 were of 50
+/// slots, one of them 30 times. After each change the looks backed off again
+/// (4, 12, 40, 120, 400 frames), and the next change was shown that much
+/// late: 30 frames on average, at 13 frames a second, as black blocks on a
+/// shirt. One caught twice is looked at in every frame for the next
+/// [`VOLATILE_FRAMES`].
+static VOLATILE: std::sync::Mutex<Option<std::collections::HashMap<u64, (u32, u64)>>> = std::sync::Mutex::new(None);
+
+fn volatile_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_RECHECK_VOLATILE").is_none_or(|v| v != "0"))
+}
+
+/// Notes a change of the texture at `at` in `frame`.
+fn volatile_note(at: u64, frame: u64) {
+    if !volatile_on() {
+        return;
+    }
+    let mut kept = VOLATILE.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = kept.get_or_insert_with(Default::default);
+    if kept.len() >= VOLATILE_MOST && !kept.contains_key(&at) {
+        kept.retain(|_, (_, last)| frame.saturating_sub(*last) < VOLATILE_FRAMES);
+        if kept.len() >= VOLATILE_MOST {
+            return;
+        }
+    }
+    let entry = kept.entry(at).or_insert((0, frame));
+    *entry = (entry.0.saturating_add(1), frame);
+}
+
+/// Whether the texture at `at` is looked at in every frame now.
+fn volatile(at: u64, frame: u64) -> bool {
+    volatile_on()
+        && VOLATILE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|kept| kept.get(&at))
+            .is_some_and(|&(changes, last)| changes >= 2 && frame.saturating_sub(last) < VOLATILE_FRAMES)
+}
+
+/// How many textures are kept as changing unnoticed, for the line.
+fn volatile_kept() -> usize {
+    VOLATILE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |kept| kept.values().filter(|v| v.0 >= 2).count())
+}
+
+/// Whether a texture uploaded whole goes on being looked at after the last
+/// of its waits (`VICTORY_RECHECK_FOREVER=0`: no, as before).
+fn recheck_forever() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_RECHECK_FOREVER").is_none_or(|v| v != "0"))
+}
+
+/// A texture whose looks after its upload are over: the frame of its next
+/// look, its slot, the address and bytes of its memory, the fingerprint it
+/// had, and the number it was noted with.
+type Swept = (u64, u32, u64, u64, u64, u64);
+
+/// The textures looked at again for as long as their slot shows them
+/// ([`recheck_forever`]), in the order of their next look, and for each slot
+/// the number of its entry (an entry that is not the slot's any more is
+/// dropped when its turn comes: the slot was uploaded again since); and the
+/// last number given.
+#[allow(clippy::type_complexity)]
+static SWEEP: std::sync::Mutex<(std::collections::VecDeque<Swept>, Option<std::collections::HashMap<u32, u64>>, u64)> =
+    std::sync::Mutex::new((std::collections::VecDeque::new(), None, 0));
+
+/// The most looks of [`sweep`] in a frame (48 KiB read each), and the most
+/// of them that may find a change (`VICTORY_RECHECK_REFILLS`, 2 unless said):
+/// each is an upload, 2-3 ms of the pass for a texture of a megabyte, and
+/// with no bound the sweep found 58 changed a second and the pass took 15 ms
+/// of a frame for 2 (run nv26). Most of those are textures nothing draws any
+/// more; the ones left over are looked at first in the next frame.
+const SWEEP_AT_ONCE: usize = 96;
+
+fn sweep_refills() -> usize {
+    static MOST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_RECHECK_REFILLS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(2)
+    })
+}
+
+/// Since the last line: looks of the sweep, and those that found a change.
+static SWEPT: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+fn sweep_note(index: u32, at: u64, len: u64, print: u64, due: u64) {
+    let mut sweep = SWEEP.lock().unwrap_or_else(|e| e.into_inner());
+    let (line, slots, last) = &mut *sweep;
+    *last += 1;
+    slots.get_or_insert_with(Default::default).insert(index, *last);
+    line.push_back((due, index, at, len, print, *last));
+}
+
+/// The looks of this frame at textures whose own looks are over: one found
+/// changed is due in the queue again, as memory mapped under it would make
+/// it, and uploaded by the pass that called this. Once a frame.
+fn sweep(host: &crate::descriptor::host::HostHeap, frame: u64) {
+    static FRAME: AtomicU64 = AtomicU64::new(u64::MAX);
+    if !recheck_forever() || FRAME.swap(frame, Ordering::Relaxed) == frame {
+        return;
+    }
+    let wait = recheck_frames().last().copied().unwrap_or(400);
+    let mut due: Vec<Swept> = Vec::new();
+    {
+        let mut sweep = SWEEP.lock().unwrap_or_else(|e| e.into_inner());
+        let (line, slots, _) = &mut *sweep;
+        while due.len() < SWEEP_AT_ONCE
+            && let Some(&next) = line.front()
+            && next.0 <= frame
+        {
+            line.pop_front();
+            if slots.as_ref().and_then(|s| s.get(&next.1)) == Some(&next.5) {
+                due.push(next);
+            }
+        }
+    }
+    let mut same: Vec<Swept> = Vec::new();
+    // Those not looked at once the frame's changes are found: first again.
+    let mut left: Vec<Swept> = Vec::new();
+    let mut refilled = 0;
+    for entry in due {
+        let (_, index, at, len, print, number) = entry;
+        if refilled >= sweep_refills() {
+            left.push(entry);
+            continue;
+        }
+        let forget = || {
+            if let Some(slots) = SWEEP.lock().unwrap_or_else(|e| e.into_inner()).1.as_mut()
+                && slots.get(&index) == Some(&number)
+            {
+                slots.remove(&index);
+            }
+        };
+        // Memory that went: the runtime told of it, and the queue has dealt
+        // with the slot. (Made due all the same, 3,500 such slots sat in the
+        // queue waiting for their memory: run nv24.)
+        if crate::texture::mapped_bytes(at as *const u8, len as usize) == 0 {
+            forget();
+            continue;
+        }
+        SWEPT[0].fetch_add(1, Ordering::Relaxed);
+        if crate::texture::fingerprint(at, len) == print {
+            same.push((frame + wait, index, at, len, print, number));
+            continue;
+        }
+        SWEPT[1].fetch_add(1, Ordering::Relaxed);
+        RECHECK_LATE[0].fetch_add(1, Ordering::Relaxed);
+        RECHECK_LATE[1].fetch_add(wait, Ordering::Relaxed);
+        RECHECK_LATE[2].fetch_max(wait, Ordering::Relaxed);
+        volatile_note(at, frame);
+        forget();
+        host.texture_slot_refill(index, frame);
+        refilled += 1;
+    }
+    if !same.is_empty() || !left.is_empty() {
+        let mut sweep = SWEEP.lock().unwrap_or_else(|e| e.into_inner());
+        for entry in left.into_iter().rev() {
+            sweep.0.push_front(entry);
+        }
+        sweep.0.extend(same);
+    }
+}
+
+/// Since the last line: looks that found a texture changed, and the frames
+/// those had waited since the look before (what was shown meanwhile was
+/// wrong for some of them).
+static RECHECK_LATE: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+
+/// A line of the looks at uploaded textures, per frame.
+pub(crate) fn recheck_line(frames: f64) {
+    static BEFORE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+    let [same, changed] =
+        [0, 1].map(|i| HEAP_TEXTURES_RECHECKED[i].load(Ordering::Relaxed) - BEFORE[i].swap(HEAP_TEXTURES_RECHECKED[i].load(Ordering::Relaxed), Ordering::Relaxed));
+    let [late, waited, longest] = [0, 1, 2].map(|i| RECHECK_LATE[i].swap(0, Ordering::Relaxed));
+    if same + changed == 0 {
+        return;
+    }
+    tracing::info!(
+        "looks at uploaded textures per frame: {:.1} found as they were, {:.2} changed and uploaded again; the changed ones had waited {:.1} frames for their look on average, {} at most ({} looks, waits {:?}); {} textures looked at in every frame for changing unnoticed; of textures whose own looks are over {} are kept, {:.1} looked at a frame and {} found changed since the last line; the queue at the last pass: {} slots, {} due, the oldest due one written {} frames before",
+        same as f64 / frames,
+        changed as f64 / frames,
+        waited as f64 / late.max(1) as f64,
+        longest,
+        late,
+        recheck_frames(),
+        volatile_kept(),
+        SWEEP.lock().unwrap_or_else(|e| e.into_inner()).0.len(),
+        SWEPT[0].swap(0, Ordering::Relaxed) as f64 / frames,
+        SWEPT[1].swap(0, Ordering::Relaxed),
+        HEAP_TEXTURES_QUEUE[0].load(Ordering::Relaxed),
+        HEAP_TEXTURES_QUEUE[1].load(Ordering::Relaxed),
+        HEAP_TEXTURES_QUEUE[4].load(Ordering::Relaxed),
+    );
+}
+
 /// Looks at uploaded textures picked by index that found the memory as it
 /// was, and that found it changed (uploaded again), since the start.
 pub(crate) static HEAP_TEXTURES_RECHECKED: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -2182,6 +2409,9 @@ impl State {
         if room {
             host.texture_slots_room(frame);
         }
+        // The textures whose looks are over and whose memory changed all the
+        // same are due again.
+        sweep(host, frame);
         // Slots whose texture's memory the runtime mapped, unmapped or
         // wrote since the last pass are due again.
         host.texture_slots_remapped(frame);
@@ -2303,15 +2533,36 @@ impl State {
             // title paints all the time through another view of their pages
             // (all their blocks are shown at other addresses too), and each
             // was shown four frames late, over and over.
-            let mut again_in = RECHECK_FRAMES[0];
+            let waits = recheck_frames();
+            let mut again_in = waits[0];
             if let Some((at, len, print, looks, uploaded)) = host.texture_slot_checked(index) {
                 if crate::texture::fingerprint(at, len) == print {
                     HEAP_TEXTURES_RECHECKED[0].fetch_add(1, Ordering::Relaxed);
-                    match RECHECK_FRAMES.get(usize::from(looks) + 1) {
+                    if volatile(at, frame) {
+                        // (Its looks stay at one: the waits begin anew when
+                        // it has been quiet for long enough.)
+                        host.texture_slot_recheck(index, write, frame + 1, (at, len), print, 1, uploaded);
+                        continue;
+                    }
+                    match waits.get(usize::from(looks) + 1) {
                         Some(wait) => {
                             host.texture_slot_recheck(index, write, frame + wait, (at, len), print, looks + 1, uploaded)
                         }
-                        None => host.texture_slot_done(index, write, None),
+                        // After the last wait it was never looked at again: a
+                        // texture the title filled anew later than that (the
+                        // looks after 120 and 400 frames still find some, run
+                        // nv22) kept its old picture, or its black, until its
+                        // slot was written. It is looked at every last wait
+                        // from here on (`VICTORY_RECHECK_FOREVER=0`: no).
+                        // (In a list of its own, `sweep`: kept in the queue,
+                        // 27,000 slots made every pass over it eight times as
+                        // long, 12-29 ms a frame in run nv23.)
+                        None => {
+                            if recheck_forever() {
+                                sweep_note(index, at, len, print, frame + waits.last().copied().unwrap_or(400));
+                            }
+                            host.texture_slot_done(index, write, None)
+                        }
                     }
                     continue;
                 }
@@ -2319,6 +2570,16 @@ impl State {
                     again_in = 1;
                 }
                 let n = HEAP_TEXTURES_RECHECKED[1].fetch_add(1, Ordering::Relaxed);
+                // Since the look before: the first is counted from the upload.
+                let waited = match looks {
+                    0 => frame.saturating_sub(uploaded),
+                    _ if volatile(at, frame) => 1,
+                    later => waits.get(usize::from(later)).copied().unwrap_or(0),
+                };
+                volatile_note(at, frame);
+                RECHECK_LATE[0].fetch_add(1, Ordering::Relaxed);
+                RECHECK_LATE[1].fetch_add(waited, Ordering::Relaxed);
+                RECHECK_LATE[2].fetch_max(waited, Ordering::Relaxed);
                 if n < 200 || n.is_multiple_of(1000) {
                     // Whether its pages are the title's at other addresses
                     // too: what is written there is told of there alone.

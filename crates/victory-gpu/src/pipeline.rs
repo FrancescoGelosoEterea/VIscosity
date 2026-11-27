@@ -505,17 +505,20 @@ fn parse_skip_hashes(value: &str) -> Vec<String> {
 
 #[cfg(all(windows, feature = "diagnostics"))]
 fn skipped_shader(p: &Pipeline) -> Option<&str> {
-    static HASHES: OnceLock<Vec<String>> = OnceLock::new();
+    // A set: this is asked at every draw and dispatch, and the list the
+    // NVIDIA launcher gives has 1,034 hashes (each of a pipeline's shaders was
+    // compared with all of them, some 3,000 comparisons a draw).
+    static HASHES: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
     let hashes = HASHES.get_or_init(|| {
         let value = std::env::var("VICTORY_SKIP_PIPELINES").unwrap_or_default();
-        parse_skip_hashes(&value)
+        parse_skip_hashes(&value).into_iter().collect()
     });
     if hashes.is_empty() {
         return None;
     }
     p.shaders
         .iter()
-        .find(|shader| hashes.contains(&shader.hash))
+        .find(|shader| hashes.contains(shader.hash.as_str()))
         .map(|shader| shader.hash.as_str())
 }
 

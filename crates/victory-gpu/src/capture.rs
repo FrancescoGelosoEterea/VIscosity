@@ -28,7 +28,9 @@ pub(crate) fn listed(n: u64) -> bool {
                 .collect()
         })
         .contains(&n)
-        || n == KEY_FRAME.load(std::sync::atomic::Ordering::Relaxed);
+        // (F9 takes six frames in a row: what flickers with a period of a few
+        // frames, as the shadows of trees did every third, is in one press.)
+        || n.checked_sub(KEY_FRAME.load(std::sync::atomic::Ordering::Relaxed)).is_some_and(|after| after < KEY_FRAMES);
     // `VICTORY_CAPTURE_WORLD`: also the 2nd and the 6th frame after the first
     // one that ran 500 draws or more (a title's first 3D frames: their
     // numbers depend on how long the menus were shown), and the 30th and
@@ -121,8 +123,10 @@ fn world_on() -> bool {
     *ON.get_or_init(|| std::env::var_os("VICTORY_CAPTURE_WORLD").is_some())
 }
 
-/// LOCAL: the frame F9 asked for ([`frame_drew`]); `u64::MAX`: none.
+/// LOCAL: the first frame F9 asked for ([`frame_drew`]); `u64::MAX`: none.
 static KEY_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+/// How many frames in a row a press of F9 takes.
+const KEY_FRAMES: u64 = 6;
 
 /// The first frame that ran 500 draws or more (`VICTORY_CAPTURE_WORLD`).
 static WORLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
