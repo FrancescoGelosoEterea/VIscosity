@@ -24,7 +24,7 @@ Stable for the whole 10-minute run: no device loss, no black screen, menus at
 | codec-d/cool_fox | 1440p | 394 ms | 2.5 |
 | codec-d/cool_fox | 144p | 361 ms | 2.8 |
 | Pavl3000/ztrx | 1440p | 470 ms | 2.1 |
-| victory-fork (this fork's ancestor) | 1440p | ~390 ms | 2.6 |
+| fxceless fork (this fork's ancestor) | 1440p | ~390 ms | 2.6 |
 | **this tree + `residency`** | **540p** | **71.7 ms** | **14.0** |
 
 Resolution alone was measured not to be the lever on this card: 1440p → 144p

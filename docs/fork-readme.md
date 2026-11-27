@@ -36,7 +36,7 @@ The other trees tested on this machine, same prologue:
 | codec-d/cool_fox | Series S, native (1440p) | 394 ms | 2.5 |
 | codec-d/cool_fox | Series S, 144p | 361 ms | 2.8 |
 | Pavl3000/ztrx | Series S, native | 470 ms | 2.1 |
-| victory-fork | Series X, native | ~390 ms | 2.6 |
+| fxceless fork | Series X, native | ~390 ms | 2.6 |
 
 Resolution alone was measured not to be the lever there: 1440p to 144p (100x
 fewer pixels) moved 394 ms to 361 ms, with the card still 96% busy. What moved
@@ -92,7 +92,8 @@ Code that is in this repository:
 - [Marvisak/VIctory](https://github.com/Marvisak/VIctory): the original
   compatibility layer under everything else (loader, runtime services,
   Direct3D 12 back end, shader recompiler).
-- [fxceless/victory-fork](https://github.com/fxceless/victory-fork): the fork the 7900 XTX one grew from, the Series S interface
+- [fxceless/victory-fork](https://github.com/fxceless/victory-fork):
+  the fork the 7900 XTX one grew from, the Series S interface
   plane (pull request 1189, Tissma95), which fixed the black menus, and the face
   network fix (pull request 927, tippythetaidum), which made faces move.
 - victory-perf, carrying patches from
