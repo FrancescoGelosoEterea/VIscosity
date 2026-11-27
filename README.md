@@ -1,3 +1,43 @@
+# VIscosity (miamiwalk base)
+
+This branch of VIscosity is **miamiwalk** (trustno1's VIctory-NVIDIA with codec-d/cool_fox's memory admission,
+and two days of work on an RTX 5070 / Ryzen 7 7700) with a few fixes from VIscosity on top. On an RTX 5070 Ti it
+draws a cleaner picture than VIscosity's cool_fox base, at the same speed, so it is the base here.
+
+What it adds to miamiwalk:
+
+- **HID gamepads** (including the vendor-0x054C pads, with rumble), read directly where XInput does not list them:
+  no extra mapping tool needed (marquezini).
+- **Mouse-look** for the keyboard's stand-in pad (`VICTORY_MOUSE=0` off, `VICTORY_MOUSE_SENS` to scale).
+- **Compute dispatches past 65,535 groups** spread across *z*, with the group id the program asked for; one
+  counted in threads runs the groups worked out from its own count (fxceless, after upstream VIctory #2312).
+- **BC7:** channel rotation only in modes 4 and 5 (upstream VIctory #3111).
+- **Fence waits:** background workers stop when a host fence wait fails (fxceless/victory-fork #1366).
+- **Launcher** `scripts/play-viscosity.ps1`: miamiwalk's settings without local paths, and the title's watchdog
+  off (`VICTORY_NO_WATCHDOG=1`). On a cold shader cache the menu stood still 29 s waiting for new pipelines and
+  the watchdog ended the process.
+
+Measured on 2026-11-27, RTX 5070 Ti 16 GB, Series S profile, world drawn at 1920x1080, the `diag` build, in the
+same places (an apartment, mostly): 17.9 fps median for this branch, 18.5 for miamiwalk alone, no errors in the log.
+
+Not taken from VIscosity, on purpose: its paired wave64 form and the rest of cool_fox's tree. A merge of both
+(branch `full-visc`, not published) translated all 26,084 shader programs, but the programs miamiwalk refuses on
+NVIDIA then ran: the screen reflections (`sr_tracing`) showed white noise on screens and glossy surfaces, and
+particles and glass looked worse.
+
+## Run it
+
+```powershell
+cargo build --locked --profile diag -p victory --features diagnostics
+$env:VICTORY_GAME_DIR = 'D:\path\to\your\title'   # the folder with game_scarlett_master.exe
+scripts\play-viscosity.ps1
+```
+
+`-World 720` draws the world at 1280x720 and lets the title upscale it; `-Fullscreen` covers the monitor. The
+log goes to `runs\<name>.log`. The rest of this page is miamiwalk's own README.
+
+---
+
 # VIctory on NVIDIA, with the world at 1080p
 
 A layer that runs one Xbox Series title natively on Windows: the title's x64 code runs on your CPU and its GPU
