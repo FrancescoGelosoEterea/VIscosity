@@ -1,8 +1,10 @@
 # VIscosity (miamiwalk base)
 
-This branch of VIscosity is **miamiwalk** (trustno1's VIctory-NVIDIA with codec-d/cool_fox's memory admission,
-and two days of work on an RTX 5070 / Ryzen 7 7700) with a few fixes from VIscosity on top. On an RTX 5070 Ti it
-draws a cleaner picture than VIscosity's cool_fox base, at the same speed, so it is the base here.
+VIscosity is now **miamiwalk** by **siilber** (trustno1's VIctory-NVIDIA with codec-d/cool_fox's memory
+admission, and two days of siilber's work on an RTX 5070 / Ryzen 7 7700) with a few fixes from VIscosity on top.
+On an RTX 5070 Ti it draws a cleaner picture than VIscosity's cool_fox base, at the same speed, so it is the base
+here. Thanks to siilber for the tree, the measurements and the help. The earlier cool_fox-based VIscosity is kept
+in the branch `viscosity-coolfox`.
 
 What it adds to miamiwalk:
 
