@@ -662,6 +662,15 @@ name = "victory-formats"
 version = "0.1.0"
 
 [[package]]
+name = "victory-frameprep"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "victory-unimem",
+ "windows",
+]
+
+[[package]]
 name = "victory-game"
 version = "0.1.0"
 dependencies = [
@@ -680,6 +689,7 @@ dependencies = [
  "victory-formats",
  "victory-pipeline",
  "victory-shader",
+ "victory-unimem",
  "windows",
  "windows-sys",
  "zlib-rs",
@@ -743,6 +753,14 @@ dependencies = [
  "windows",
  "windows-sys",
  "zlib-rs",
+]
+
+[[package]]
+name = "victory-unimem"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "windows",
 ]
 
 [[package]]
