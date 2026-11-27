@@ -150,6 +150,68 @@ fn render_scale_patches(base: usize, scale: f32, fsr: bool) -> Vec<OwnedPatch> {
     patches
 }
 
+/// Environment variable that sets the size of the title's graphics pool on
+/// the Series S profile, in megabytes (`0`: as the title has it).
+pub(crate) const GRAPHICS_POOL_ENV: &str = "VICTORY_GRAPHICS_POOL_MB";
+
+/// Where this build keeps the size of that pool for Series S, and what it
+/// holds there and for Series X.
+///
+/// The title divides its memory into nine pools whose sizes it reads once,
+/// at its start, from a table of two rows (S, X) of ten 64-bit numbers at
+/// RVA 0x6186250: the total (8,572 and 13,312 MB) and the pools that add up
+/// to it. The fourth number is the pool its render targets and other
+/// textures of its own are placed in: 1,277 MB on S, 2,199 MB on X. Each pool
+/// is one allocation from the runtime, which has no budget of its own.
+///
+/// A render scale above 2/3 overruns the S pool while the title makes its
+/// targets: an allocation of 0x21c000 bytes fails in it and the title stops at
+/// a breakpoint of its own (`+0x2219650`, seven seconds in: runs nv8 and nv25,
+/// at 0.75; the same is reported of 1.0). On the console the scale never goes
+/// above what the pool was sized for.
+const GRAPHICS_POOL_RVA: usize = 0x6186268;
+const GRAPHICS_POOL_S: u64 = 0x4fd0_0000;
+const GRAPHICS_POOL_X: u64 = 0x8970_0000;
+
+/// The megabytes the graphics pool gets: what [`GRAPHICS_POOL_ENV`] says
+/// (between the title's own 1,277 and 8,192), or with nothing said the
+/// Series X pool's size for a render scale above 2/3. `None`: left alone.
+fn graphics_pool_mb(asked: Option<&str>, scale: Option<f32>) -> Option<u64> {
+    const MIB: u64 = 1 << 20;
+    match asked.map(|text| text.trim().parse::<u64>()) {
+        Some(Ok(0)) => None,
+        Some(Ok(mb)) if (GRAPHICS_POOL_S / MIB..=8192).contains(&mb) => Some(mb),
+        Some(_) => {
+            tracing::warn!("{GRAPHICS_POOL_ENV} wants megabytes between 1277 and 8192, or 0");
+            None
+        }
+        None => scale.filter(|s| *s > 2.0 / 3.0 + 1e-3).map(|_| GRAPHICS_POOL_X / MIB),
+    }
+}
+
+fn graphics_pool_patch(mb: u64) -> OwnedPatch {
+    OwnedPatch {
+        what: "graphics pool: Series S size",
+        rva: GRAPHICS_POOL_RVA,
+        expect: GRAPHICS_POOL_S.to_le_bytes().to_vec(),
+        new: (mb << 20).to_le_bytes().to_vec(),
+    }
+}
+
+/// The room the title keeps for the render targets that live for part of a
+/// frame, in pages of 64 KiB: `mov eax, 0x1290` (Series S, 297 MB) beside
+/// `mov esi, 0x2c60` (Series X, 710 MB), chosen by the console. It lays the
+/// frame's 646 such targets out by their lifetimes and stops at a breakpoint
+/// (`+0x2473e88`) when they need more: 453 MB at a render scale of 1.0 (runs
+/// nv30 and nv31, four seconds in, once the pool above was large enough).
+/// With the larger pool the Series S number is made the Series X one.
+const TRANSIENT_TARGETS: Patch<'static> = Patch {
+    what: "transient targets: Series S room = Series X room",
+    rva: 0x1d488ac,
+    expect: &[0xB8, 0x90, 0x12, 0x00, 0x00],
+    new: &[0xB8, 0x60, 0x2C, 0x00, 0x00],
+};
+
 /// The scale `VICTORY_RENDER_SCALE` asks for, if valid.
 fn parse_scale(text: &str) -> Option<f32> {
     let v: f32 = text.trim().parse().ok()?;
@@ -164,7 +226,8 @@ fn parse_scale(text: &str) -> Option<f32> {
 pub(crate) unsafe fn resolution_levers(base: usize, hash: &blake3::Hash) -> usize {
     let scale = std::env::var(RENDER_SCALE_ENV).ok();
     let own = std::env::var_os(OWN_UPSCALER_ENV).is_some_and(|v| v != "0");
-    if scale.is_none() && !own {
+    let pool = std::env::var(GRAPHICS_POOL_ENV).ok();
+    if scale.is_none() && !own && pool.is_none() {
         return 0;
     }
     // Every image the loader maps comes here (the title's DLLs too); only
@@ -177,6 +240,18 @@ pub(crate) unsafe fn resolution_levers(base: usize, hash: &blake3::Hash) -> usiz
     if own {
         // SAFETY: forwarded from this function's contract.
         applied += usize::from(unsafe { apply(base, &OWN_UPSCALER) });
+    }
+    if let Some(mb) = graphics_pool_mb(pool.as_deref(), scale.as_deref().and_then(parse_scale)) {
+        let p = graphics_pool_patch(mb);
+        let p = Patch { what: p.what, rva: p.rva, expect: &p.expect, new: &p.new };
+        // SAFETY: forwarded from this function's contract; the table is read
+        // by the title's start, which has not run.
+        if unsafe { apply(base, &p) } {
+            applied += 1;
+            tracing::info!(mb, "the title's graphics pool on Series S (1277 MB as the title has it; {GRAPHICS_POOL_ENV})");
+            // SAFETY: as above.
+            applied += usize::from(unsafe { apply(base, &TRANSIENT_TARGETS) });
+        }
     }
     if let Some(text) = scale {
         match parse_scale(&text) {
@@ -247,6 +322,22 @@ mod tests {
         assert_eq!(p[2].new, [0xC5, 0xFA, 0x10, 0x05, 0x22, 0x78, 0x6D, 0x03]);
         assert_eq!(p[3].new, ((base + 0x28ef680) as u64).to_le_bytes());
         assert!(p.iter().all(|p| p.new.len() == p.expect.len()));
+    }
+
+    #[test]
+    fn the_graphics_pool_grows_for_scales_above_two_thirds_or_when_asked() {
+        assert_eq!(graphics_pool_mb(None, Some(0.667)), None);
+        assert_eq!(graphics_pool_mb(None, Some(0.5)), None);
+        assert_eq!(graphics_pool_mb(None, None), None);
+        assert_eq!(graphics_pool_mb(None, Some(0.75)), Some(2199));
+        assert_eq!(graphics_pool_mb(None, Some(1.0)), Some(2199));
+        assert_eq!(graphics_pool_mb(Some("0"), Some(1.0)), None);
+        assert_eq!(graphics_pool_mb(Some(" 3072 "), Some(0.5)), Some(3072));
+        assert_eq!(graphics_pool_mb(Some("512"), Some(1.0)), None);
+        assert_eq!(graphics_pool_mb(Some("lots"), Some(1.0)), None);
+        let p = graphics_pool_patch(2199);
+        assert_eq!(p.expect, [0x00, 0x00, 0xD0, 0x4F, 0, 0, 0, 0]);
+        assert_eq!(p.new, [0x00, 0x00, 0x70, 0x89, 0, 0, 0, 0]);
     }
 
     #[test]
