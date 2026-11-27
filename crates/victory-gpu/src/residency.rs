@@ -6,6 +6,8 @@
 //! takes the title's own allocations down with it — the run then black-screens
 //! and the layer's residency warning appears in the log. Nothing else in this
 //! fork looked at the machine's free memory.
+// (Part of the module as ported is not called from this tree.)
+#![allow(dead_code)]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};

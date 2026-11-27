@@ -333,8 +333,6 @@ fn rest() -> u32 {
 /// The clamp compiled from `source` (ours, or in the benchmark the one it
 /// replaced).
 fn make_from(device: &ID3D12Device, source: &str) -> windows::core::Result<Clamp> {
-    #[cfg(feature = "diagnostics")]
-    let batched = source == batch::SOURCE;
     let source = &format!("#define WIDEST {}u\n#define REST {}\n{source}", widest(amd(device)), rest());
     let mut code: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
@@ -484,7 +482,7 @@ fn clamp_into(
 /// `INDIRECT_ARGUMENT`. `ahead`: the records are a window clamped ahead of
 /// their draws ([`bound_ahead`]). False, with nothing recorded, if the
 /// layout or the addresses do not fit the clamp.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 fn record_clamp_as(
     c: &Clamp,
     l: &ID3D12GraphicsCommandList,
@@ -3542,6 +3540,7 @@ void work() {
         heap_pairs: [[Option<ID3D12DescriptorHeap>; 2]; 2],
         tables: [D3D12_GPU_DESCRIPTOR_HANDLE; 2],
         targets: [D3D12_CPU_DESCRIPTOR_HANDLE; 2],
+        #[allow(dead_code)]
         depth_written: D3D12_CPU_DESCRIPTOR_HANDLE,
         depth_tested: D3D12_CPU_DESCRIPTOR_HANDLE,
         stamps: ID3D12QueryHeap,

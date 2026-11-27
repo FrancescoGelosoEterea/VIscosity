@@ -10,6 +10,8 @@
 //! report finds an indirect execution by how many the breadcrumbs' history
 //! has before it. Nothing is kept without device-removed data.
 //! `VICTORY_D3D12_DRED=faults` and no data at all: nothing is noted.
+// (Read only by the diagnostics feature's device-loss report.)
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
