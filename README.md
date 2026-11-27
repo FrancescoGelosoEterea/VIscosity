@@ -1,5 +1,7 @@
 # VIscosity (miamiwalk base)
 
+<img src="docs/images/siilber.webp" alt="siilber" width="160" align="right">
+
 VIscosity is now **miamiwalk** by **siilber** (trustno1's VIctory-NVIDIA with codec-d/cool_fox's memory
 admission, and two days of siilber's work on an RTX 5070 / Ryzen 7 7700) with a few fixes from VIscosity on top.
 On an RTX 5070 Ti it draws a cleaner picture than VIscosity's cool_fox base, at the same speed, so it is the base
