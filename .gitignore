@@ -9,6 +9,9 @@
 
 # Build output
 /target/
+
+# What scripts/test-run.ps1 writes: logs and window grabs of test runs
+/runs/
 /tests/fixtures/*/target/
 
 # Local configuration (contains paths to YOUR files)

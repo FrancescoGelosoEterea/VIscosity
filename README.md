@@ -1,5 +1,13 @@
 # VIctory on NVIDIA
 
+## This tree
+
+The copy described below, with work of 2026-11-26 and 27 on top: the world drawn at 1920x1080 on the
+Series S profile (16-18 fps on an RTX 5070 with a Ryzen 7 7700), no more draws dropped for want of
+descriptor slots, textures the title fills late looked at again, two new crates, a launcher and
+profiling tools. What was added, what it measured and what is open: [docs/miamiwalk.md](docs/miamiwalk.md).
+Start it with `scripts\play-miamiwalk.ps1`.
+
 ## This copy
 
 This tree is the fork above with one thing added: **host-memory admission**
