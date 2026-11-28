@@ -52,6 +52,12 @@ pub fn run(
     }
     // A title that relaunched itself: the old process must be gone first.
     victory_hle::modules::lifecycle::wait_for_previous();
+    // DLSS Frame Generation (`VICTORY_FRAMEGEN=1`): Streamline is loaded
+    // before the host device is made, which it is then given.
+    #[cfg(windows)]
+    if execute {
+        victory_hle::framegen::init(&victory_hle::framegen::Asked::from_env());
+    }
     let cfg = victory_core::Config::load()?;
     let original = std::fs::read(exe).with_context(|| format!("reading {}", exe.display()))?;
     let prepared = victory_loader::prepare(&original)?;

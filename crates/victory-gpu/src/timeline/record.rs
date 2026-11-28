@@ -413,6 +413,12 @@ fn sample() {
             }
             put_of(id, Kind::Sample, "a sample", (t, t), at as u64, 0, keep(frames));
         }
+        // (Waiting for a long frame, for minutes: a look every two
+        // milliseconds, asleep in between.)
+        if asked().is_some_and(|a| a.freeze.is_some()) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
         let until = ticks() + frequency() / 4000;
         while ticks() < until {
             std::hint::spin_loop();
@@ -443,6 +449,15 @@ struct Asked {
     after: Vec<f64>,
     frames: u64,
     started: std::time::Instant,
+    /// `VICTORY_TIMELINE_FREEZE=<ms>`: instead of recording at fixed times,
+    /// stretches of `frames` frames are recorded one after another and only
+    /// one with a frame that took this long is written (with the two frames
+    /// after it); and how many are written at most (`VICTORY_TIMELINE_MOST`, 8).
+    freeze: Option<(std::time::Duration, usize)>,
+    /// With `freeze`: the seconds after one was written before the next
+    /// stretch is recorded (`VICTORY_TIMELINE_APART`, 20), so that a burst of
+    /// long frames does not take every recording there is.
+    apart: f64,
 }
 
 /// `<from s>[+<from s>..],<frames>,<file>`, or a file alone.
@@ -468,10 +483,14 @@ fn asked() -> Option<&'static Asked> {
             let number = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse::<f64>().ok());
             let text = file.to_string_lossy();
             let (when, file) = parse(&text);
+            let freeze = number("VICTORY_TIMELINE_FREEZE").filter(|ms| *ms >= 1.0).map(|ms| {
+                let most = number("VICTORY_TIMELINE_MOST").map_or(8, |n| n as usize).clamp(1, 64);
+                (std::time::Duration::from_secs_f64(ms / 1000.0), most)
+            });
             let (after, frames) = when.unwrap_or_else(|| {
                 (
                     vec![number("VICTORY_TIMELINE_AT").unwrap_or(60.0)],
-                    number("VICTORY_TIMELINE_FRAMES").map_or(3, |n| n as u64),
+                    number("VICTORY_TIMELINE_FRAMES").map_or(if freeze.is_some() { 30 } else { 3 }, |n| n as u64),
                 )
             });
             Some(Asked {
@@ -479,6 +498,8 @@ fn asked() -> Option<&'static Asked> {
                 after,
                 frames: frames.clamp(1, 60),
                 started: std::time::Instant::now(),
+                freeze,
+                apart: number("VICTORY_TIMELINE_APART").filter(|s| *s >= 0.0).unwrap_or(20.0),
             })
         })
         .as_ref()
@@ -498,62 +519,46 @@ struct Stage {
     made: usize,
     writing: bool,
     before: Option<super::report::Threads>,
+    /// When the present before this one came back.
+    last: Option<std::time::Instant>,
+    /// Waiting for a long frame: the frames still to record after the one
+    /// caught (0: none caught), and how long that one took, in milliseconds.
+    tail: u64,
+    caught: f64,
+    /// Waiting for a long frame: no stretch begins before this many seconds
+    /// since the start.
+    rest_until: f64,
 }
 
-/// The title's present came back.
-pub(crate) fn presented() {
-    let Some(asked) = asked() else {
-        return;
-    };
-    static STAGE: Mutex<Stage> = Mutex::new(Stage {
-        ready: false,
-        began: false,
-        frames: 0,
-        made: 0,
-        writing: false,
-        before: None,
-    });
-    let mut stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(&after) = asked.after.get(stage.made) else {
-        return;
-    };
-    if stage.writing || asked.started.elapsed().as_secs_f64() < after {
-        return;
-    }
-    if !stage.ready {
-        // The buffers, the card's lists and the threads' clocks take a
-        // while: the recording begins two frames later.
-        stage.ready = true;
-        make_room();
-        crate::host::timeline_ready();
-        return;
-    }
-    if !stage.began {
-        stage.began = true;
-        stage.before = Some(super::report::Threads::now());
-        tracing::info!(file = %asked.file.display(), frames = asked.frames, "the timeline begins (VICTORY_TIMELINE)");
-        begin();
-        if std::thread::Builder::new().name("victory-sample".into()).spawn(sample).is_err() {
-            tracing::warn!("the timeline is without samples of the title's threads");
-        }
-        frame();
-        return;
+static STAGE: Mutex<Stage> = Mutex::new(Stage {
+    ready: false,
+    began: false,
+    frames: 0,
+    made: 0,
+    writing: false,
+    before: None,
+    last: None,
+    tail: 0,
+    caught: 0.0,
+    rest_until: 0.0,
+});
+
+/// A recording begins at this present.
+fn begin_at_present(stage: &mut Stage) {
+    stage.began = true;
+    stage.before = Some(super::report::Threads::now());
+    begin();
+    if std::thread::Builder::new().name("victory-sample".into()).spawn(sample).is_err() {
+        tracing::warn!("the timeline is without samples of the title's threads");
     }
     frame();
-    stage.frames += 1;
-    if stage.frames < asked.frames {
-        return;
-    }
+}
+
+/// The recording that ends at this present is written to `file`, by a
+/// thread of its own; another may begin once it is.
+fn write_at_present(mut stage: std::sync::MutexGuard<'static, Stage>, file: std::path::PathBuf) {
     stage.writing = true;
     let before = stage.before.take().unwrap_or_default();
-    // Several recordings: a file each.
-    let file = match asked.after.len() {
-        1 => asked.file.clone(),
-        _ => {
-            let end = asked.file.extension().map_or("json".into(), |e| e.to_string_lossy().into_owned());
-            asked.file.with_extension(format!("{after:.0}.{end}"))
-        }
-    };
     drop(stage);
     let write = move || {
         let after = super::report::Threads::now();
@@ -569,6 +574,125 @@ pub(crate) fn presented() {
     if std::thread::Builder::new().name("victory-timeline".into()).spawn(write).is_err() {
         tracing::warn!("no thread to write the timeline");
     }
+}
+
+/// [`presented`] while waiting for a long frame (`VICTORY_TIMELINE_FREEZE`):
+/// `gap` is the time since the present before.
+fn presented_waiting(
+    asked: &'static Asked,
+    mut stage: std::sync::MutexGuard<'static, Stage>,
+    gap: Option<std::time::Duration>,
+    (least, most): (std::time::Duration, usize),
+) {
+    let after = asked.after.first().copied().unwrap_or(60.0);
+    let elapsed = asked.started.elapsed().as_secs_f64();
+    if stage.writing || stage.made >= most || elapsed < after {
+        return;
+    }
+    if !stage.ready {
+        stage.ready = true;
+        make_room();
+        crate::host::timeline_ready();
+        return;
+    }
+    if !stage.began {
+        if elapsed < stage.rest_until {
+            return;
+        }
+        if stage.made == 0 && stage.frames == 0 {
+            tracing::info!(
+                file = %asked.file.display(),
+                least_ms = least.as_millis() as u64,
+                frames = asked.frames,
+                most,
+                "the timeline waits for a frame that takes long (VICTORY_TIMELINE_FREEZE)"
+            );
+        }
+        (stage.frames, stage.tail) = (0, 0);
+        begin_at_present(&mut stage);
+        return;
+    }
+    frame();
+    stage.frames += 1;
+    if stage.tail == 0 {
+        match gap {
+            Some(gap) if gap >= least => {
+                (stage.tail, stage.caught) = (2, gap.as_secs_f64() * 1000.0);
+            }
+            // Nothing long in this stretch: it is let go and another begins.
+            _ if stage.frames >= asked.frames => {
+                stage.writing = true;
+                drop(stage);
+                let again = || {
+                    drop(end());
+                    crate::host::timeline_restart();
+                    let mut stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
+                    (stage.began, stage.writing) = (false, false);
+                    stage.frames = 1;
+                };
+                if std::thread::Builder::new().name("victory-timeline".into()).spawn(again).is_err() {
+                    tracing::warn!("no thread to begin the timeline again");
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+    stage.tail -= 1;
+    if stage.tail > 0 {
+        return;
+    }
+    let end = asked.file.extension().map_or("json".into(), |e| e.to_string_lossy().into_owned());
+    let file = asked.file.with_extension(format!("{elapsed:.0}s-{:.0}ms.{end}", stage.caught));
+    tracing::info!(file = %file.display(), ms = stage.caught as u64, "a frame took long: the timeline of it is kept (VICTORY_TIMELINE_FREEZE)");
+    stage.rest_until = elapsed + asked.apart;
+    write_at_present(stage, file);
+}
+
+/// The title's present came back.
+pub(crate) fn presented() {
+    let Some(asked) = asked() else {
+        return;
+    };
+    let mut stage = STAGE.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    let gap = stage.last.replace(now).map(|last| now.duration_since(last));
+    if let Some(freeze) = asked.freeze {
+        return presented_waiting(asked, stage, gap, freeze);
+    }
+    let Some(&after) = asked.after.get(stage.made) else {
+        return;
+    };
+    if stage.writing || asked.started.elapsed().as_secs_f64() < after {
+        return;
+    }
+    if !stage.ready {
+        // The buffers, the card's lists and the threads' clocks take a
+        // while: the recording begins two frames later.
+        stage.ready = true;
+        make_room();
+        crate::host::timeline_ready();
+        return;
+    }
+    if !stage.began {
+        tracing::info!(file = %asked.file.display(), frames = asked.frames, "the timeline begins (VICTORY_TIMELINE)");
+        begin_at_present(&mut stage);
+        return;
+    }
+    frame();
+    stage.frames += 1;
+    if stage.frames < asked.frames {
+        return;
+    }
+    // Several recordings: a file each.
+    let file = match asked.after.len() {
+        1 => asked.file.clone(),
+        _ => {
+            let end = asked.file.extension().map_or("json".into(), |e| e.to_string_lossy().into_owned());
+            asked.file.with_extension(format!("{after:.0}.{end}"))
+        }
+    };
+    write_at_present(stage, file);
 }
 
 /// A frame ends now.

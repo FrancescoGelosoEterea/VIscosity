@@ -27,6 +27,8 @@ pub use victory_gpu::console;
 pub use victory_gpu::replay;
 
 #[cfg(windows)]
+pub use victory_gpu::framegen;
+#[cfg(windows)]
 pub use victory_gpu::pipeline::known as known_pipelines;
 
 use victory_loader::{ImportResolver, Provenance, Resolution};

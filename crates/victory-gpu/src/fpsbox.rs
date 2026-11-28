@@ -64,6 +64,12 @@ fn text(tenths: u32) -> String {
     format!("{}.{} FPS", tenths / 10, tenths % 10)
 }
 
+/// The rate of the frames shown, in tenths, for `rendered` tenths of frames
+/// rendered a second and `hundredths` of frames shown for each.
+fn shown_tenths(rendered: u32, hundredths: u32) -> u32 {
+    ((u64::from(rendered) * u64::from(hundredths.max(100)) + 50) / 100).min(99_999) as u32
+}
+
 /// Bytes a pixel of a swap chain format this layer presents in, or none.
 fn pixel_bytes(format: DXGI_FORMAT) -> Option<usize> {
     match format {
@@ -173,6 +179,9 @@ pub(crate) fn draw(host: &crate::host::Host, list: &ID3D12GraphicsCommandList, b
         // over thousands of values is not expected.)
         made.clear();
     }
+    // With frame generation the rate is that of the frames shown: the
+    // rendered ones times what was shown for each over the measured second.
+    let tenths = shown_tenths(tenths, crate::framegen::shown_hundredths());
     let key = (tenths, format.0, scale);
     if let std::collections::hash_map::Entry::Vacant(e) = made.entry(key) {
         let (w, h, lit) = bitmap(&text(tenths), scale);
@@ -229,6 +238,11 @@ mod tests {
         assert_eq!(text(103), "10.3 FPS");
         assert_eq!(text(7), "0.7 FPS");
         assert_eq!(text(300), "30.0 FPS");
+        // With frame generation the number is the frames shown.
+        assert_eq!(shown_tenths(214, 100), 214);
+        assert_eq!(shown_tenths(214, 300), 642);
+        assert_eq!(shown_tenths(214, 287), 614);
+        assert_eq!(text(shown_tenths(214, 300)), "64.2 FPS");
     }
 
     #[test]

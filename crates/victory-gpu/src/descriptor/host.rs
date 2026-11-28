@@ -1800,6 +1800,18 @@ impl HostHeap {
         (if max == 0 { Vec::new() } else { textures.due(frame, max) }, textures.census(frame))
     }
 
+    /// Those of `indices` that are in the queue (waiting for an upload or a look, due now or
+    /// later, held back or not), each once, with its write number.
+    pub(crate) fn texture_slots_queued(&self, indices: &[u32]) -> Vec<(u32, u64)> {
+        let textures = self.textures.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seen = std::collections::BTreeSet::new();
+        indices
+            .iter()
+            .filter(|&&index| index < self.count && seen.insert(index))
+            .filter_map(|&index| textures.slots.get(&index).map(|w| (index, w.write)))
+            .collect()
+    }
+
     /// A number that changes when a slot is written or made due anew, and
     /// whether memory was noted since a pass last took the notes.
     pub(crate) fn texture_news(&self) -> (u64, bool) {
@@ -1927,6 +1939,24 @@ impl HostHeap {
         }
         textures.changed(index, frame, frame);
         true
+    }
+
+    /// Slot `index`, which a draw of the title's bake is about to read (`crate::draw`
+    /// `bake_named`), is to be uploaded again from title memory as it is now: its write number
+    /// in the queue, where it is put (due now) if it was not there. Also a slot that shows
+    /// nothing now (the caller found a texture view in the title's record): one whose new
+    /// texture waits to be shown (`show_after`) shows a stand-in meanwhile, which the bake
+    /// would keep.
+    pub(crate) fn texture_slot_again(&self, index: u32, frame: u64) -> Option<u64> {
+        if self.sampler || index >= self.count {
+            return None;
+        }
+        let mut textures = self.textures.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(waiting) = textures.slots.get(&index) {
+            return Some(waiting.write);
+        }
+        textures.changed(index, frame, frame);
+        textures.slots.get(&index).map(|waiting| waiting.write)
     }
 
     /// Makes the slots of the textures filled with less than was mapped
@@ -2188,6 +2218,35 @@ impl HostHeap {
         matches!((view(shown), view(key)), (Some(a), Some(b)) if same_placed_texture(&a, &b))
     }
 
+    /// Before a draw of the title's bake (`crate::draw` `bake_empty`): host slot `index`,
+    /// whose title record at `handle` is waiting for its upload, shows a texture that is not
+    /// the one that record views (what the slot held before the title wrote it anew). It is
+    /// made to show nothing until its own upload has run. Not a slot that shows the same
+    /// placed texture by an earlier view (another level of it: [`Self::texture_slot_shows_other`]),
+    /// nor one that shows nothing or is up to date. Whether it was emptied.
+    pub(crate) fn texture_slot_empty_if_another(&self, index: u32, handle: u64) -> bool {
+        if index >= self.count {
+            return false;
+        }
+        let key = record_key(handle);
+        let Some(shown) = self.made.get(index) else {
+            return false;
+        };
+        if key == 0 || shown == 0 || shown == key {
+            return false;
+        }
+        let view = |key: u64| view_at(key as u32, (key >> 32) as u32);
+        if matches!((view(shown), view(key)), (Some(a), Some(b)) if same_placed_texture(&a, &b)) {
+            return false;
+        }
+        let _made = self.made.lock(index);
+        if self.made.get(index) != Some(shown) {
+            return false;
+        }
+        self.unmake(index);
+        true
+    }
+
     /// Slot `index` is made from the record at `handle` (what it is now)
     /// when `list`, which holds the upload of what that view shows, has run:
     /// until then it shows what it showed. (Made at once, the frames on the
@@ -2289,6 +2348,18 @@ impl HostHeap {
 
     /// Makes the slots whose new view's upload has run
     /// ([`HostHeap::texture_slot_flip`]); returns how many.
+    /// Whether a slot of this heap waits to be made for a submission that has not finished
+    /// (its texture's upload is in it), or a view to be made again does: a draw of the
+    /// title's bake has the card finish first (`crate::draw` `flush_for_bake`).
+    pub(crate) fn flips_wait(&self) -> bool {
+        let own = std::ptr::from_ref(self) as usize;
+        let finished = crate::host::submissions().1;
+        if FLIPS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|f| f.heap == own && f.after > finished) {
+            return true;
+        }
+        RESHOWN_AFTER.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|&(at, _)| at > finished)
+    }
+
     pub(crate) fn texture_slots_flip(&self) -> usize {
         use std::sync::atomic::Ordering::Relaxed;
         let finished = crate::host::submissions().1;

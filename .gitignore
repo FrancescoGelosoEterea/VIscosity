@@ -79,3 +79,5 @@
 *.swp
 Thumbs.db
 .DS_Store
+# NVIDIA's Streamline files for frame generation (not ours to ship).
+/nvidia-sdk/

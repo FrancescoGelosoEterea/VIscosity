@@ -136,6 +136,20 @@ fn claim(resource: This, first: u32, there: u64) -> Option<Taken> {
     Some(Taken::New(job))
 }
 
+/// Waits until every upload on its way here has run and done what was to follow it (the
+/// slots that show its texture queued to be made, `Job::then`): before a draw of the title's
+/// bake, which keeps for good what it reads. Returns how many were waited for; gives up
+/// after two seconds. (From trustno1-coder/VIctory-NVIDIA.)
+pub(crate) fn drain() -> usize {
+    let mut way = ON_THEIR_WAY.lock().unwrap_or_else(|e| e.into_inner());
+    let waiting = way.len();
+    let started = std::time::Instant::now();
+    while !way.is_empty() && started.elapsed().as_millis() < 2000 {
+        way = LANDED.wait_timeout(way, std::time::Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    waiting
+}
+
 /// Sends a job of [`take`] on its way.
 pub(crate) fn send(job: &Arc<Job>) {
     QUEUE.0.lock().unwrap_or_else(|e| e.into_inner()).push_back(job.clone());
@@ -291,11 +305,6 @@ fn finish(jobs: Vec<Arc<Job>>) {
         job.copy.ahead.store(DONE, Relaxed);
         BYTES.fetch_sub(job.staging.read as u64, Relaxed);
     }
-    {
-        let mut way = ON_THEIR_WAY.lock().unwrap_or_else(|e| e.into_inner());
-        way.retain(|(serial, _)| !jobs.iter().any(|job| job.copy.serial == *serial));
-        LANDED.notify_all();
-    }
     for job in &jobs {
         let us = job.asked.elapsed().as_micros() as u64;
         let n = STATS[0].fetch_add(1, Relaxed) + 1;
@@ -316,6 +325,13 @@ fn finish(jobs: Vec<Arc<Job>>) {
         for f in then.into_iter().flatten() {
             f();
         }
+    }
+    // (Off the way only now, with what follows them done: [`drain`] then finds every slot of
+    // theirs ready to be made.)
+    {
+        let mut way = ON_THEIR_WAY.lock().unwrap_or_else(|e| e.into_inner());
+        way.retain(|(serial, _)| !jobs.iter().any(|job| job.copy.serial == *serial));
+        LANDED.notify_all();
     }
     crate::descriptor::host::flip_now();
 }

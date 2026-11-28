@@ -5,6 +5,13 @@
 //! the times (each in a file of its own, the second in its name): a Chrome trace (JSON, for
 //! `chrome://tracing` or Perfetto) and beside it a text summary (`.txt`)
 //! with the chain of work and waits each frame's present came out of.
+//! `VICTORY_TIMELINE_FREEZE=<ms>` (with `VICTORY_TIMELINE=<file>`): instead,
+//! from `VICTORY_TIMELINE_AT` seconds on, stretches of
+//! `VICTORY_TIMELINE_FRAMES` frames (30) are recorded one after another and
+//! only one in which a frame took that long is written, with the two frames
+//! after it (`<file>.<second>s-<ms>ms.json` and `.txt`), at most
+//! `VICTORY_TIMELINE_MOST` of them (8), `VICTORY_TIMELINE_APART` seconds
+//! (20) apart: what a freeze was waiting for.
 //!
 //! What is recorded while it runs, by every thread:
 //! - spans of ours ([`span`]): the title's calls, the submitting thread's

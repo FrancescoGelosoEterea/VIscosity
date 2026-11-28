@@ -155,6 +155,19 @@ enum Command {
     Replay(replay::Replay),
     /// Show the resolved configuration and check it.
     Config,
+    /// Check NVIDIA Streamline and DLSS Frame Generation on this PC without
+    /// the title (`VICTORY_STREAMLINE_DIR`): whether it loads and this GPU
+    /// supports it; with --present, the host device handed over and three
+    /// seconds of presents with frame generation in a window of ours.
+    #[cfg(windows)]
+    FramegenCheck {
+        /// The output size, `<width>x<height>`.
+        #[arg(long, default_value = "1920x1080")]
+        output: String,
+        /// Present for three seconds with frame generation.
+        #[arg(long)]
+        present: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -232,6 +245,17 @@ fn main() -> Result<()> {
         #[cfg(all(windows, feature = "diagnostics"))]
         Command::Replay(options) => replay::run(options),
         Command::Config => show_config(),
+        #[cfg(windows)]
+        Command::FramegenCheck { output, present } => {
+            let size = output
+                .split_once(['x', 'X'])
+                .and_then(|(w, h)| Some([w.trim().parse().ok()?, h.trim().parse().ok()?]))
+                .ok_or_else(|| anyhow::anyhow!("--output {output}: not <width>x<height>"))?;
+            for line in victory_hle::framegen::check(size, present) {
+                println!("{line}");
+            }
+            Ok(())
+        }
     }
 }
 

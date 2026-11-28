@@ -37,6 +37,10 @@ pub mod dxgi;
 pub mod fence;
 #[cfg(windows)]
 mod fpsbox;
+#[cfg(windows)]
+pub mod framegen;
+#[cfg(windows)]
+mod pace;
 pub mod frame;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod book;

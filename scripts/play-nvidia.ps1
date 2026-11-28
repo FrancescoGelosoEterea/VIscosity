@@ -13,6 +13,9 @@
 # -Build           target\diag (the default, the build all measurements are of) or target\release
 #                  (the release build ignores the ray-tracing skip list: VICTORY_SKIP_PIPELINES is a diagnostics switch)
 # -More            other settings: -More @{VICTORY_PANEL='1'}
+# -Prepare         do not start the title: translate all its shaders into the cache with these settings, then make
+#                  the pipelines earlier runs wrote down (VICTORY_PIPELINE_BOOK=1). Minutes; once per build or setting.
+# -Skip            more passes of the title left out, by shader hash (added to the ray-tracing list; diag build only)
 # Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
 param(
     [Parameter(Mandatory)][string]$Exe,
@@ -23,6 +26,8 @@ param(
     [ValidateSet('2160', '1440', '1080', '720', '540', '480')][string]$Resolution,
     [string]$Adapter,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
+    [string[]]$Skip = @(),
+    [switch]$Prepare,
     [hashtable]$More = @{}
 )
 $settings = @{
@@ -82,6 +87,10 @@ if ($Resolution) {
 }
 if ($Adapter) { $settings.VICTORY_ADAPTER = $Adapter }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
+if ($Skip) {
+    $listed = @($settings.VICTORY_SKIP_PIPELINES -split ',' | Where-Object { $_ -match '^[0-9a-fA-F]{16}$' })
+    $settings.VICTORY_SKIP_PIPELINES = (@($listed) + @($Skip) | Select-Object -Unique) -join ','
+}
 $scale = [double]::Parse($settings.VICTORY_RENDER_SCALE, [Globalization.CultureInfo]::InvariantCulture)
 Write-Host "Series $console, rendering at $([int]($outHeight * $scale))p (render scale $($settings.VICTORY_RENDER_SCALE))"
 
@@ -104,4 +113,13 @@ $Exe = (Resolve-Path $Exe).Path
 $runArgs = @('run', $Exe, '--execute')
 if (-not $SeriesX) { $runArgs += @('--console', 'series-s') }
 Push-Location (Join-Path $PSScriptRoot '..')   # victory.toml is looked for here
-try { & $victory @runArgs } finally { Pop-Location }
+try {
+    if ($Prepare) {
+        Write-Host 'Translating the title''s shaders into the cache (a few minutes, every core)...'
+        & $victory shaders (Split-Path $Exe)
+        Write-Host 'Making the pipelines earlier runs wrote down (none on a first start; up to an hour for all of them)...'
+        & $victory warm
+    } else {
+        & $victory @runArgs
+    }
+} finally { Pop-Location }

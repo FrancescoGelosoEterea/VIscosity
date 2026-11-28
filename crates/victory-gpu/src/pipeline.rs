@@ -64,6 +64,10 @@ pub(crate) struct Shader {
     /// Its part in the stand-in for the indirect light.
     #[cfg(windows)]
     pub(crate) ambient: Option<crate::ambient::Role>,
+    /// One of the title's temporal pass, which reads the scene's depth and
+    /// motion vectors (`crate::framegen::inputs`).
+    #[cfg(windows)]
+    pub(crate) framegen: bool,
     #[cfg(windows)]
     translated: OnceLock<Option<Translated>>,
 }
@@ -117,6 +121,8 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
                 #[cfg(windows)]
                 ambient: (stage == "compute").then(|| crate::ambient::role(bytes)).flatten(),
                 #[cfg(windows)]
+                framegen: stage == "compute" && crate::framegen::inputs::role(bytes),
+                #[cfg(windows)]
                 translated: OnceLock::new(),
             })
         })
@@ -135,6 +141,8 @@ pub(crate) struct Translated {
     pub(crate) stores: bool,
     /// Whether it can store through raw addresses ([`stores_by_address`]).
     pub(crate) stores_by_address: bool,
+    /// Whether it is one of the title's decoration bake programs ([`bakes`]).
+    pub(crate) bakes: bool,
     /// Whether it stores through a view it picks from the heap by an index,
     /// once asked (`crate::picked`).
     pub(crate) picks: std::sync::atomic::AtomicU8,
@@ -212,6 +220,7 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         _ => None,
     });
     let stores_by_address = programs.is_empty() || programs.iter().any(stores_by_address);
+    let bakes = programs.iter().any(bakes);
     let used = programs
         .into_iter()
         .find(|p| {
@@ -228,8 +237,25 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
         used,
         stores,
         stores_by_address,
+        bakes,
         picks: Default::default(),
     })
+}
+
+/// Whether a console program is one of the title's decoration bake programs: a pixel program
+/// that reads, through a table, a buffer of records of 304 bytes (the decoration records,
+/// each with the number of the texture it picks from the view heap first).
+///
+/// The title has 339 such pixel programs (`PS_BakeDecorations_*` and `PS_DecorationBlend_*`,
+/// each in up to 21 builds), and no other pixel program of its shader archive reads records
+/// of that size (2026-11-27: a mesh and a vertex program of the bake do, which pick no
+/// texture). Four of them were known by their hashes before; a session used ten, and the
+/// people baked by the other six kept another texture's colours for as long as they stood.
+#[cfg(windows)]
+fn bakes(program: &victory_shader::NativeProgram) -> bool {
+    use victory_shader::{HwStage, ResourceType, RootType};
+    program.stage == HwStage::Ps
+        && program.used.iter().any(|u| u.kind == ResourceType::Srv && u.root == RootType::Table && u.stride == 304)
 }
 
 /// The compute pipelines of the console's ray-tracing structure builder

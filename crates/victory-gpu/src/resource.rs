@@ -1641,8 +1641,9 @@ fn hosted(this: This, make: bool) -> Option<Made> {
 }
 
 /// The host copy of title texture `this` if it is made, without making it
-/// (for diagnostics, which must not count as a use).
-#[cfg(all(windows, feature = "diagnostics"))]
+/// (for diagnostics and for looking through what a program reads, which
+/// must not count as a use).
+#[cfg(windows)]
 pub(crate) fn host_made<'a>(
     this: This,
 ) -> Option<&'a windows::Win32::Graphics::Direct3D12::ID3D12Resource> {

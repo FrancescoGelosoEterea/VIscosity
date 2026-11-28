@@ -18,16 +18,17 @@ use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
-/// Frames of descriptors in the ring (three each): presents in flight
+/// Frames of descriptors in the ring (four each): presents in flight
 /// must not find theirs rewritten.
 const SLOTS: u32 = 16;
 
 const SOURCE: &str = r#"
-#define RS "RootConstants(num32BitConstants=5, b0), DescriptorTable(SRV(t0, numDescriptors=2), UAV(u0)), StaticSampler(s0, filter=FILTER_MIN_MAG_MIP_LINEAR, addressU=TEXTURE_ADDRESS_CLAMP, addressV=TEXTURE_ADDRESS_CLAMP)"
-cbuffer Size : register(b0) { uint w; uint h; uint premultiplied; float sharpen; uint smooth; };
+#define RS "RootConstants(num32BitConstants=6, b0), DescriptorTable(SRV(t0, numDescriptors=2), UAV(u0, numDescriptors=2)), StaticSampler(s0, filter=FILTER_MIN_MAG_MIP_LINEAR, addressU=TEXTURE_ADDRESS_CLAMP, addressV=TEXTURE_ADDRESS_CLAMP)"
+cbuffer Size : register(b0) { uint w; uint h; uint premultiplied; float sharpen; uint smooth; uint both; };
 Texture2D<float4> game : register(t0);
 Texture2D<float4> ui : register(t1);
 RWTexture2D<float4> outp : register(u0);
+RWTexture2D<float4> bare : register(u1);
 SamplerState linear_clamp : register(s0);
 [RootSignature(RS)]
 [numthreads(8, 8, 1)]
@@ -78,6 +79,9 @@ void main(uint3 id : SV_DispatchThreadID) {
         float3 weight = amount * (-1.0 / lerp(8.0, 5.0, saturate(sharpen)));
         g.rgb = saturate(((a + b + d + e) * weight + c) / (1.0 + 4.0 * weight));
     }
+    // The picture as shown but for the interface (frame generation is given
+    // it, to tell the interface from the scene).
+    if (both != 0) bare[id.xy] = float4(g.rgb, 1.0);
     float4 u = ui.SampleLevel(linear_clamp, uv, 0);
     float3 c = premultiplied != 0 ? g.rgb * (1.0 - u.a) + u.rgb : lerp(g.rgb, u.rgb, u.a);
     outp[id.xy] = float4(c, 1.0);
@@ -94,6 +98,8 @@ struct Pass {
     next: u32,
     /// The texture shown instead, by size.
     out: Option<(u64, u32, ID3D12Resource)>,
+    /// The same without the interface, for frame generation, by size.
+    bare: Option<(u64, u32, ID3D12Resource)>,
 }
 // SAFETY: D3D12 objects are free-threaded; the pass is used under a lock.
 unsafe impl Send for Pass {}
@@ -137,7 +143,7 @@ fn make(device: &ID3D12Device) -> windows::core::Result<Pass> {
         let kind = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         let views: ID3D12DescriptorHeap = device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
             Type: kind,
-            NumDescriptors: SLOTS * 3,
+            NumDescriptors: SLOTS * 4,
             Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
             NodeMask: 0,
         })?;
@@ -150,6 +156,7 @@ fn make(device: &ID3D12Device) -> windows::core::Result<Pass> {
             views,
             next: 0,
             out: None,
+            bare: None,
         })
     }
 }
@@ -196,6 +203,44 @@ fn premultiplied() -> bool {
     *ON.get_or_init(|| std::env::var_os("VICTORY_PLANE_PREMULTIPLIED").is_some_and(|v| v == "1"))
 }
 
+/// What [`record`] made: the texture shown instead of the game's plane, and,
+/// with frame generation where the game's picture is changed on the way
+/// (sharpened or smoothed), the same without the interface. Both are left in
+/// the copy-source state.
+pub(crate) struct Laid {
+    pub(crate) shown: ID3D12Resource,
+    pub(crate) bare: Option<ID3D12Resource>,
+}
+
+/// A device-local 8-bit RGBA texture a shader writes, in the copy-source
+/// state.
+fn target(device: &ID3D12Device, w: u64, h: u32) -> Option<ID3D12Resource> {
+    let heap = D3D12_HEAP_PROPERTIES {
+        Type: D3D12_HEAP_TYPE_DEFAULT,
+        ..Default::default()
+    };
+    let desc = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Width: w,
+        Height: h,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        ..Default::default()
+    };
+    let mut out: Option<ID3D12Resource> = None;
+    // SAFETY: plain creation of a device-local texture.
+    unsafe {
+        device
+            .CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_SOURCE, None, &mut out)
+            .ok()?;
+    }
+    out
+}
+
 /// Records, into the present's `list`, `ui` laid over `game` into a
 /// texture of ours, and gives that texture, left in the copy-source
 /// state. `game` is in the copy-source state (the present put it there);
@@ -207,7 +252,7 @@ pub(crate) fn record(
     game: &ID3D12Resource,
     ui: &ID3D12Resource,
     ui_state: u32,
-) -> Option<ID3D12Resource> {
+) -> Option<Laid> {
     // SAFETY: live resources; plain queries.
     let (gd, ud) = unsafe { (game.GetDesc(), ui.GetDesc()) };
     if !rgba8(gd.Format) || !rgba8(ud.Format) {
@@ -233,33 +278,20 @@ pub(crate) fn record(
     let pass = kept.as_mut()?.as_mut()?;
     let (w, h) = (gd.Width, gd.Height);
     if pass.out.as_ref().is_none_or(|o| (o.0, o.1) != (w, h)) {
-        let heap = D3D12_HEAP_PROPERTIES {
-            Type: D3D12_HEAP_TYPE_DEFAULT,
-            ..Default::default()
-        };
-        let desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Width: w,
-            Height: h,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-            ..Default::default()
-        };
-        let mut out: Option<ID3D12Resource> = None;
-        // SAFETY: plain creation of a device-local texture.
-        unsafe {
-            device
-                .CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_SOURCE, None, &mut out)
-                .ok()?;
-        }
-        pass.out = Some((w, h, out?));
+        pass.out = Some((w, h, target(device, w, h)?));
     }
     let out = pass.out.as_ref()?.2.clone();
-    let first = (pass.next % SLOTS) * 3;
+    // With frame generation, where the picture shown is not the game's own
+    // plane with the interface over it: that picture without the interface.
+    let bare = if crate::framegen::hudless_wanted() && (sharpen() > 0.0 || smooth()) {
+        if pass.bare.as_ref().is_none_or(|o| (o.0, o.1) != (w, h)) {
+            pass.bare = target(device, w, h).map(|t| (w, h, t));
+        }
+        pass.bare.as_ref().map(|b| b.2.clone())
+    } else {
+        None
+    };
+    let first = (pass.next % SLOTS) * 4;
     pass.next = pass.next.wrapping_add(1);
     let cpu = |i: u32| D3D12_CPU_DESCRIPTOR_HANDLE { ptr: pass.cpu + ((first + i) * pass.step) as usize };
     let gpu = D3D12_GPU_DESCRIPTOR_HANDLE { ptr: pass.gpu + u64::from(first * pass.step) };
@@ -297,7 +329,12 @@ pub(crate) fn record(
         before.push(t(ui, ui_state, read));
         after.push(t(ui, read, ui_state));
     }
-    let constants: [u32; 5] = [w as u32, h, u32::from(premultiplied()), sharpen().to_bits(), u32::from(smooth())];
+    if let Some(bare) = &bare {
+        before.push(t(bare, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+        after.push(t(bare, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE));
+    }
+    let constants: [u32; 6] =
+        [w as u32, h, u32::from(premultiplied()), sharpen().to_bits(), u32::from(smooth()), u32::from(bare.is_some())];
     // SAFETY: an open list (the present's); slots of our heap; live
     // resources and objects (the pass's own live as long as the process,
     // the texture is kept by the present's list).
@@ -305,14 +342,28 @@ pub(crate) fn record(
         device.CreateShaderResourceView(game, Some(&srv), cpu(0));
         device.CreateShaderResourceView(ui, Some(&srv), cpu(1));
         device.CreateUnorderedAccessView(&out, None::<&ID3D12Resource>, Some(&uav), cpu(2));
+        // (Without it: a null view, which the shader does not write.)
+        device.CreateUnorderedAccessView(bare.as_ref(), None::<&ID3D12Resource>, Some(&uav), cpu(3));
         list.ResourceBarrier(&before);
         list.SetDescriptorHeaps(&[Some(pass.views.clone())]);
         list.SetComputeRootSignature(&pass.root);
         list.SetPipelineState(&pass.pso);
-        list.SetComputeRoot32BitConstants(0, 5, constants.as_ptr().cast(), 0);
+        list.SetComputeRoot32BitConstants(0, 6, constants.as_ptr().cast(), 0);
         list.SetComputeRootDescriptorTable(1, gpu);
         list.Dispatch((w as u32).div_ceil(8), h.div_ceil(8), 1);
         list.ResourceBarrier(&after);
     }
-    Some(out)
+    Some(Laid { shown: out, bare })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pass with its two outputs (the picture shown, and the same without
+    /// the interface for frame generation).
+    #[test]
+    fn the_pass_compiles() {
+        crate::host::compile(SOURCE, windows::core::s!("main"), windows::core::s!("cs_5_1")).expect("the present planes' pass compiles");
+    }
 }

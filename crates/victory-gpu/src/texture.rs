@@ -1503,6 +1503,14 @@ pub(crate) fn staged_memory(resource: This) -> Option<(u64, u64)> {
 /// through the kernel, so pages not there count as zeros.
 pub(crate) fn fingerprint(at: u64, len: u64) -> u64 {
     const WINDOW: usize = 16 << 10;
+    /// Whether a larger texture is read at every 64 KiB block (`VICTORY_FINGERPRINT_BLOCKS=0`:
+    /// at its start, middle and end alone, as before). The title fills a texture's memory
+    /// block by block through other mappings of its pages: one filled between the three
+    /// places read as unchanged, and kept on the card what its blocks held before.
+    fn fingerprint_blocks() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("VICTORY_FINGERPRINT_BLOCKS").is_none_or(|v| v != "0"))
+    }
     thread_local! {
         static READ: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     }
@@ -1518,6 +1526,22 @@ pub(crate) fn fingerprint(at: u64, len: u64) -> u64 {
         };
         if len <= 3 * WINDOW {
             take(0, len);
+        } else if fingerprint_blocks() {
+            // 4 KiB of every 64 KiB block the texture's memory touches (of every n-th block
+            // for one over 8 MiB, so that a look reads half a megabyte at most), and its
+            // first and last 4 KiB.
+            const BLOCK: usize = 64 << 10;
+            const PIECE: usize = 4 << 10;
+            const MOST: usize = 512 << 10;
+            take(0, PIECE);
+            let first = BLOCK - at as usize % BLOCK;
+            let blocks = len.saturating_sub(first).div_ceil(BLOCK);
+            let every = (blocks * PIECE).div_ceil(MOST).max(1);
+            for block in (0..blocks).step_by(every) {
+                let from = first + block * BLOCK;
+                take(from, PIECE.min(len - from));
+            }
+            take(len - PIECE, PIECE);
         } else {
             take(0, WINDOW);
             take((len / 2) & !0xfff, WINDOW);

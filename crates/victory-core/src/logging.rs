@@ -4,6 +4,12 @@
 //! `VICTORY_LOG=victory_loader=trace,info`. Debug and trace output exist
 //! only in builds with the `diagnostics` feature; a plain release build
 //! logs info and above whatever the filter asks for.
+//!
+//! `VICTORY_LOG_FILE=<file>` writes the log there (plain text) instead of to
+//! the standard error stream. A stream a shell redirects is a pipe the shell
+//! reads at its own pace (PowerShell wraps every line in an error record):
+//! when it falls behind, every thread that logs waits for it, and a frame
+//! waits with them.
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -23,13 +29,22 @@ pub fn init(default_level: &str) {
         .ok()
         .and_then(|v| EnvFilter::try_new(v).ok())
         .unwrap_or_else(|| EnvFilter::new(default_level));
+    let file = std::env::var_os("VICTORY_LOG_FILE")
+        .filter(|path| !path.is_empty())
+        .and_then(|path| std::fs::File::create(path).ok());
+    let colours = file.is_none();
+    let writer = match file {
+        Some(file) => tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::sync::Mutex::new(file)),
+        None => tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stderr),
+    };
     let _ = tracing_subscriber::registry()
         .with(CAP)
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(true)
-                .with_writer(std::io::stderr),
+                .with_ansi(colours)
+                .with_writer(writer),
         )
         .try_init();
 }
